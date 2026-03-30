@@ -11,6 +11,17 @@
 
 ### 新增
 
+- `[文档]` 新增前端 MVP v0.2 实施计划 (`docs/dev/frontend-implementation-plan.md`)
+  - 基于 UX 设计文档 §9.2 和已完成的后端 API (16 端点 + SSE)，将前端开发分解为 6 个实施阶段
+  - 阶段 1 项目脚手架 → 阶段 2 布局与路由 → 阶段 3 项目管理 → 阶段 4 工作流核心交互 → 阶段 5 综述预览与导出 → 阶段 6 集成测试与 Docker 部署
+  - 技术栈：Vite + React 18 + TypeScript + Ant Design 5 + Zustand + Axios
+  - 完整 API 对接清单 (5 组 16 个端点 + SSE)、TypeScript 类型定义 (对齐后端 Pydantic Schema)
+  - 状态管理设计 (projectStore / workflowStore / uiStore)
+  - SSE 事件处理映射表 (10 种事件类型 → 前端响应)
+  - HITL 交互流程 (3 个中断点的前端交互方案)
+  - 项目工作区状态机 (CREATED → SEARCHING → HITL → READING → WRITING → COMPLETED)
+  - Nginx 配置 (SPA fallback + API 反向代理 + SSE 无缓冲)、Docker 多阶段构建
+  - 文件产出清单 (~50 个文件)、技术风险分析、后续迭代规划 (v0.3~v1.0)
 - `[后端]` 实施计划阶段 7 完成：集成测试、Docker 部署与文档
   - E2E 集成测试 (`tests/test_e2e.py`)：14 项测试覆盖完整生命周期
     - 项目 CRUD 全流程 (创建/获取/更新/列表/删除/404)
