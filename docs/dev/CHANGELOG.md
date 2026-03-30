@@ -11,6 +11,51 @@
 
 ### 新增
 
+- `[后端]` 实施计划阶段 7 完成：集成测试、Docker 部署与文档
+  - E2E 集成测试 (`tests/test_e2e.py`)：14 项测试覆盖完整生命周期
+    - 项目 CRUD 全流程 (创建/获取/更新/列表/删除/404)
+    - 工作流控制 (status/cancel/start-Celery-dispatch/conflict-409/resume-HITL-3种类型)
+    - 完整 LangGraph 工作流 (mock agents, 3 次 HITL pause/resume, HITL 反馈环路, 修订循环)
+    - 统一错误响应格式验证 (§8.3.7)
+    - OpenAPI schema 可用性验证
+  - Live E2E 测试 (`tests/test_e2e_live.py`)：3 项真实 LLM 测试，标记 `@pytest.mark.live`，CI 中 skip
+  - Celery 优雅关停 (`tasks.py`)：`worker_shutting_down` 信号处理，in-flight 任务可感知 shutdown 标志
+  - Docker 增强:
+    - Dockerfile 添加非 root 用户 (appuser) 安全运行
+    - docker-compose.yml 添加 `networks: app-net`、`restart: unless-stopped`、`redis-data` 持久卷、Celery worker 命令修正为 `celery -A app.celery_app:celery_app`
+  - README.md：项目介绍、系统架构图、快速开始 (Docker / 本地 / CLI)、API 端点一览、环境变量、项目结构、技术栈
+  - Swagger UI 文档验证：16 条 OpenAPI paths 全部完整生成
+  - 全部 214 项测试通过，3 项 Live 测试正确 skip
+- `[后端]` 实施计划阶段 6 完成：接口层
+  - 项目管理 API (`api/routes/projects.py`)：POST/GET/PATCH/DELETE 5 个端点，含分页 PaginatedResponse、软删除
+  - 工作流控制 API (`api/routes/workflow.py`)：start/resume/status/cancel 4 个端点，HitlFeedback → ReviewState 转换，Celery 任务调度
+  - 论文管理 API (`api/routes/papers.py`)：列表(含分页+状态过滤)/更新状态/详情/上传 4 个端点
+  - 输出与导出 API (`api/routes/outputs.py`)：列表/详情/导出(markdown/word/bibtex/ris) 3 个端点，文件流下载
+  - SSE 事件流 (`api/routes/events.py`)：Redis Pub/Sub → SSE 推送，Last-Event-ID 重放，_format_sse 格式化
+  - 统一错误处理 (`api/exceptions.py`)：AppError/NotFoundError/ConflictError/ServiceUnavailableError，register_exception_handlers 全局注册
+  - 工作流 Schema (`schemas/workflow.py`)：HitlFeedback (search_review/outline_review/draft_review)、WorkflowStartResponse、WorkflowStatusResponse、ExportRequest
+  - Celery 配置 (`celery_app.py`)：3 级队列 (high/default/low)、JSON 序列化、task_acks_late
+  - Celery 任务 (`tasks.py`)：run_review_segment — checkpoint 分段执行，asyncio.run 桥接，HITL aupdate_state 恢复，EventPublisher 事件推送
+  - CLI 客户端 (`cli.py`)：Click 命令行界面 — review 命令(交互式 HITL：论文选择/大纲审阅/初稿审阅)、status 命令、Token 用量展示、BibTeX 导出
+  - 路由注册 (`main.py`)：6 个 router 全部挂载 — health/projects/workflow/papers/outputs/events
+  - 全部 16 个业务端点 + 2 个健康检查 + Swagger 文档确认注册
+  - requirements.txt 新增 click>=8.1
+  - 30 项新增测试 (异常类 ×4 + Schema ×7 + 路由注册 ×2 + HITL 状态构建 ×5 + Celery ×2 + SSE ×1 + 导出 ×3 + httpx 集成 ×2 + 项目 Schema ×4)，全部 200 项测试通过
+- `[后端]` 实施计划阶段 5 完成：编排层
+  - workflow.yaml 配置文件 (`config/workflow.yaml`)：MVP 节点配置，analyze/critique `enabled: false`，3 个 HITL `interrupt: true` 节点，4 条条件路由边，revise_review `sequential: false` 仅通过条件路由触达
+  - 条件路由函数 (`agents/routing.py`)：route_after_search_review / route_after_read / route_after_critique / route_after_draft_review / check_token_budget，ROUTER_REGISTRY 查找表
+  - Orchestrator (`agents/orchestrator.py`)：
+    - `load_workflow_config()` 加载 YAML (UTF-8)
+    - `build_review_graph()` 配置驱动动态构建 LangGraph StateGraph (12 节点 MVP)，自动过滤禁用节点、区分 sequential/non-sequential 节点、条件路由边自动关联 ROUTER_REGISTRY
+    - `compile_review_graph()` 编译含 checkpointer + `interrupt_before` 的完整工作流图
+    - HITL passthrough 节点：human_review_search / human_review_outline / human_review_draft (interrupt 前暂停)
+    - check_read_feedback 节点：Reader 反馈检查 + feedback_iteration_count 递增
+    - revise_review → human_review_draft 循环边
+    - `_ensure_agents_imported()` 确保所有 Agent 模块自注册
+  - Checkpointer 工厂 (`agents/checkpointer.py`)：`create_checkpointer()` 配置驱动切换 sqlite/postgres
+  - requirements.txt 新增 `langgraph-checkpoint-sqlite>=3.0`
+  - 31 项新增集成测试 (routing ×15 + HITL 节点 ×5 + config ×2 + graph build ×4 + 端到端 flow ×4 + 反馈环路 ×1)，全部 170 项测试通过
+  - 验收标准全部满足：端到端工作流执行 (mock Agent)、HITL 暂停/恢复 (update_state + ainvoke(None))、反馈环路 max_iteration 自动退出、禁用节点跳过、修订循环 (revise → re-review → export)、Token 预算超限检测
 - `[后端]` 实施计划阶段 4 完成：Agent 实现
   - ReviewState TypedDict (`agents/state.py`)：全部字段对齐 §4.2，含 HITL 信号、反馈环路控制、Token 预算追踪
   - AgentRegistry (`agents/registry.py`)：全局单例注册中心，Agent 自注册模式

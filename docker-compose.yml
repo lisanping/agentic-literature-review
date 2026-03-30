@@ -16,9 +16,12 @@ services:
       - PROMPTS_DIR=prompts
     volumes:
       - app-data:/data
+    networks:
+      - app-net
     depends_on:
       redis:
         condition: service_healthy
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
       interval: 30s
@@ -30,7 +33,7 @@ services:
   worker:
     build: ./backend
     command: >
-      celery -A app.tasks worker -l info
+      celery -A app.celery_app:celery_app worker -l info
       -Q high,default,low
       --max-tasks-per-child=100
     environment:
@@ -46,13 +49,16 @@ services:
       - PROMPTS_DIR=prompts
     volumes:
       - app-data:/data
+    networks:
+      - app-net
     depends_on:
       redis:
         condition: service_healthy
       backend:
         condition: service_healthy
+    restart: unless-stopped
     healthcheck:
-      test: ["CMD", "celery", "-A", "app.tasks", "inspect", "ping", "-t", "5"]
+      test: ["CMD", "celery", "-A", "app.celery_app:celery_app", "inspect", "ping", "-t", "5"]
       interval: 60s
       timeout: 10s
       retries: 3
@@ -63,11 +69,21 @@ services:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+    networks:
+      - app-net
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 3s
       retries: 3
 
+networks:
+  app-net:
+    driver: bridge
+
 volumes:
   app-data:
+  redis-data:

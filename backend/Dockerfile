@@ -13,13 +13,18 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends curl && \
     rm -rf /var/lib/apt/lists/*
 
+# Non-root user for security
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+
 WORKDIR /app
 
 COPY --from=builder /install /usr/local
 COPY . .
 
 # Create data directory
-RUN mkdir -p /data
+RUN mkdir -p /data && chown -R appuser:appuser /data
+
+USER appuser
 
 EXPOSE 8000
 

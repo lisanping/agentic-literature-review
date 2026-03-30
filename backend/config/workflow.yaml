@@ -1,0 +1,46 @@
+# Workflow configuration — MVP literature review pipeline
+# Aligned with system-architecture.md §4.1
+
+workflow:
+  name: "literature_review"
+
+  # Agent nodes in execution order
+  nodes:
+    - name: parse_intent
+    - name: search
+    - name: human_review_search
+      interrupt: true
+    - name: read
+    - name: check_read_feedback
+    - name: analyze
+      enabled: false            # MVP disabled
+    - name: critique
+      enabled: false            # MVP disabled
+    - name: generate_outline
+    - name: human_review_outline
+      interrupt: true
+    - name: write_review
+    - name: verify_citations
+    - name: human_review_draft
+      interrupt: true
+    - name: revise_review
+      sequential: false     # only reachable via conditional edge
+    - name: export
+
+  # Conditional routing edges
+  edges:
+    - from: human_review_search
+      router: route_after_search_review
+      targets: [search, read]
+    - from: check_read_feedback
+      router: route_after_read
+      targets: [search, generate_outline]
+    - from: check_critic_feedback
+      router: route_after_critique
+      targets: [search, generate_outline]
+      enabled: false
+    - from: human_review_draft
+      router: route_after_draft_review
+      targets: [revise_review, export]
+
+  max_feedback_iterations: 2

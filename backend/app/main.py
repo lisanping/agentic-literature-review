@@ -4,13 +4,13 @@ from contextlib import asynccontextmanager
 from collections.abc import AsyncGenerator
 
 import structlog
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 
 from app.config import settings
 from app.logging import setup_logging
-from app.api.routes import health
+from app.api.exceptions import register_exception_handlers
+from app.api.routes import health, projects, workflow, papers, outputs, events
 
 logger = structlog.stdlib.get_logger()
 
@@ -40,25 +40,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ── Exception handlers ──
+register_exception_handlers(app)
+
 # ── Routes ──
 app.include_router(health.router)
-
-
-# ── Global exception handler ──
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    logger.error(
-        "unhandled_exception",
-        path=request.url.path,
-        method=request.method,
-        error=str(exc),
-    )
-    return JSONResponse(
-        status_code=500,
-        content={
-            "detail": {
-                "code": "INTERNAL_ERROR",
-                "message": "An unexpected error occurred",
-            }
-        },
-    )
+app.include_router(projects.router)
+app.include_router(workflow.router)
+app.include_router(papers.router)
+app.include_router(outputs.router)
+app.include_router(events.router)
