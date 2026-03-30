@@ -1,8 +1,9 @@
 # 多智能体文献综述应用 — 数据模型设计
 
-> **文档版本**: v1.0
+> **文档版本**: v1.2
 > **创建日期**: 2026-03-28
-> **文档状态**: 初稿
+> **最后更新**: 2026-03-30
+> **文档状态**: 迭代修订
 > **前置文档**: [需求与功能设计](requirements-and-functional-design.md) · [系统架构](system-architecture.md)
 > **文档说明**: 本文档定义系统核心实体、关系、数据库 Schema 及枚举类型，为后端编码实现提供直接的数据层指导。
 
@@ -52,12 +53,12 @@
 
 ### 1.2 设计原则
 
-| 原则             | 说明                                                               |
-| ---------------- | ------------------------------------------------------------------ |
-| **论文全局去重** | 同一篇论文（按 DOI / S2 ID）只存一份，多个项目共享                 |
-| **分析项目隔离** | 论文的分析结果按项目隔离，同一篇论文在不同研究问题下有不同分析角度 |
-| **输出可扩展**   | 输出类型通过枚举定义，新增类型只需扩展枚举值                       |
-| **软删除**       | 核心实体使用 `deleted_at` 字段软删除，保留审计轨迹                 |
+| 原则             | 说明                                                                                                                                                                               |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **论文全局去重** | 同一篇论文（按 DOI / S2 ID）只存一份，多个项目共享                                                                                                                                 |
+| **分析项目隔离** | 论文的分析结果按项目隔离，同一篇论文在不同研究问题下有不同分析角度                                                                                                                 |
+| **输出可扩展**   | 输出类型通过枚举定义，新增类型只需扩展枚举值                                                                                                                                       |
+| **软删除**       | 项目级实体（`projects`、`project_papers`、`paper_analyses`、`review_outputs`）使用 `deleted_at` 字段软删除，保留审计轨迹。全局共享实体（`papers`）不做软删除，因可能被多个项目引用 |
 
 ---
 
@@ -128,6 +129,8 @@ class PaperSourceType(StrEnum):
     PUBMED = "pubmed"
     CROSSREF = "crossref"
     DBLP = "dblp"
+    CORE = "core"                   # CORE 开放获取聚合 (非 MVP)
+    UNPAYWALL = "unpaywall"         # Unpaywall OA 查找 (非 MVP)
     USER_UPLOAD = "user_upload"     # 用户手动上传
 ```
 
@@ -168,6 +171,7 @@ class ExportFormat(StrEnum):
     EXCEL = "excel"                 # .xlsx
     CSV = "csv"
     BIBTEX = "bibtex"              # .bib
+    RIS = "ris"                    # .ris (Zotero / Mendeley / EndNote 互操作)
     SVG = "svg"
     PNG = "png"
 ```
@@ -178,11 +182,14 @@ class ExportFormat(StrEnum):
 
 一个"项目"对应用户发起的一次文献综述任务。
 
+> **权威定义声明**: 本文档是系统数据结构的权威定义。当其他文档（如系统架构中的 ORM 示例）与本文档存在差异时，以本文档为准。
+
 ### 3.1 数据库表
 
 ```sql
 CREATE TABLE projects (
     id              TEXT PRIMARY KEY,           -- UUID
+    user_id         TEXT,                       -- 用户标识 (MVP 单用户可为空，多用户版必填)
     title           TEXT NOT NULL,              -- 项目标题 (可由 LLM 自动生成)
     user_query      TEXT NOT NULL,              -- 用户原始研究问题
     status          TEXT NOT NULL DEFAULT 'created',  -- ProjectStatus
@@ -196,6 +203,10 @@ CREATE TABLE projects (
     -- 统计
     paper_count     INTEGER NOT NULL DEFAULT 0,
 
+    -- 成本追踪
+    token_usage     TEXT,                       -- JSON: {total_input, total_output, by_agent: {search: {input, output}, ...}}
+    token_budget    INTEGER,                    -- 用户设置的 Token 预算上限 (NULL 表示不限制)
+
     -- LangGraph 关联
     thread_id       TEXT,                       -- LangGraph Checkpointer thread ID
 
@@ -205,8 +216,9 @@ CREATE TABLE projects (
     deleted_at      TEXT                        -- 软删除
 );
 
-CREATE INDEX idx_projects_status ON projects(status);
+CREATE INDEX idx_projects_status ON projects(status) WHERE deleted_at IS NULL;
 CREATE INDEX idx_projects_created ON projects(created_at);
+CREATE INDEX idx_projects_user ON projects(user_id) WHERE user_id IS NOT NULL AND deleted_at IS NULL;
 ```
 
 ### 3.2 Pydantic Model
@@ -226,6 +238,7 @@ class ProjectCreate(BaseModel):
 class ProjectResponse(BaseModel):
     """项目详情响应"""
     id: str
+    user_id: str | None
     title: str
     user_query: str
     status: ProjectStatus
@@ -233,6 +246,8 @@ class ProjectResponse(BaseModel):
     output_language: str
     citation_style: CitationStyle
     paper_count: int
+    token_usage: dict | None
+    token_budget: int | None
     created_at: datetime
     updated_at: datetime
 ```
@@ -250,6 +265,18 @@ class ProjectResponse(BaseModel):
   "seed_paper_ids": []
 }
 ```
+
+### 3.4 数据访问层约定
+
+业务代码通过 **SQLAlchemy ORM** 访问数据库，Schema 迁移使用 **Alembic**（详见[系统架构 7.3~7.4 节](system-architecture.md#七状态管理与持久化)）。
+
+| 约定                   | 说明                                                                                 |
+| ---------------------- | ------------------------------------------------------------------------------------ |
+| **ORM 优先**           | 业务层只通过 SQLAlchemy ORM 操作数据库，不直接拼写 SQL                               |
+| **方言无关**           | ORM 模型避免 SQLite/PostgreSQL 特有语法；UUID 存为 `String`；JSON 字段用 `JSON` 类型 |
+| **Schema 迁移**        | 所有表结构变更通过 Alembic 迁移脚本管理，`alembic upgrade head` 创建/更新 Schema     |
+| **本文档 Schema 定位** | 本文档的 SQL `CREATE TABLE` 为逻辑参考设计，实际 Schema 由 ORM 模型 + Alembic 生成   |
+| **迁移路径**           | MVP 使用 SQLite，v0.5 迁移到 PostgreSQL 时仅需修改 `DATABASE_URL` 并重新 migrate     |
 
 ---
 
@@ -287,11 +314,19 @@ CREATE TABLE papers (
 
     -- 文件存储
     pdf_path        TEXT,                       -- 已下载的 PDF 本地路径
-    parsed_text     TEXT,                       -- 解析后的全文文本 (可为空)
 
     -- 时间戳
     fetched_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- 论文全文文本独立存储，避免 papers 主表膨胀
+-- 论文全文可达数万字，与高频查询的元数据分离后不影响主表性能
+CREATE TABLE paper_fulltext (
+    paper_id        TEXT PRIMARY KEY REFERENCES papers(id),
+    content         TEXT NOT NULL,              -- 解析后的全文文本
+    parser_used     TEXT,                       -- 解析器: "pymupdf" | "grobid"
+    parsed_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE INDEX idx_papers_doi ON papers(doi) WHERE doi IS NOT NULL;
@@ -364,6 +399,7 @@ class PaperMetadata(BaseModel):
     source: PaperSourceType
     source_url: str | None = None
     pdf_url: str | None = None
+    url: str | None = None          # 论文来源页面 URL (详情页/landing page)
     open_access: bool = False
 
 class PaperResponse(BaseModel):
@@ -419,15 +455,25 @@ CREATE TABLE paper_analyses (
     -- 在综述中的使用
     relevance_score REAL,                       -- 与研究问题的相关性 0.0 - 1.0
 
+    -- 分析深度
+    analysis_depth  TEXT NOT NULL DEFAULT 'abstract_only',
+                                                -- "fulltext": 基于全文精读 | "abstract_only": 仅基于摘要
+
     -- 元信息
     analyzed_at     TEXT NOT NULL DEFAULT (datetime('now')),
     model_used      TEXT,                       -- 分析使用的 LLM 模型
 
-    UNIQUE(project_id, paper_id)                -- 一个项目中每篇论文只有一条分析
+    -- 软删除 (随项目级联)
+    deleted_at      TEXT
 );
 
-CREATE INDEX idx_analysis_project ON paper_analyses(project_id);
-CREATE INDEX idx_analysis_paper ON paper_analyses(paper_id);
+-- 部分唯一索引：仅对未软删除的记录生效，避免软删除后无法重新分析同一论文
+CREATE UNIQUE INDEX idx_analysis_unique_active
+    ON paper_analyses(project_id, paper_id)
+    WHERE deleted_at IS NULL;
+
+CREATE INDEX idx_analysis_project ON paper_analyses(project_id) WHERE deleted_at IS NULL;
+CREATE INDEX idx_analysis_paper ON paper_analyses(paper_id) WHERE deleted_at IS NULL;
 ```
 
 ### 5.2 Pydantic Model
@@ -447,6 +493,7 @@ class PaperAnalysisResponse(BaseModel):
     relations: list[PaperRelation]
     quality_score: float | None
     relevance_score: float | None
+    analysis_depth: str             # "fulltext" | "abstract_only"
 
 class PaperRelation(BaseModel):
     """论文间关系"""
@@ -507,17 +554,22 @@ CREATE TABLE review_outputs (
     citation_style  TEXT NOT NULL DEFAULT 'apa',
     writing_style   TEXT,                       -- "narrative" | "systematic" | "critical"
 
+    -- 引用验证 (verify_citations 节点填充)
+    citation_verification TEXT,                 -- JSON array: [{ref_index, paper_id, status, source, verified_at}]
+                                                -- status: "verified" | "unverified" | "pending"
+
     -- 导出记录
     export_formats  TEXT,                       -- JSON array: 已导出的格式
 
     -- 时间戳
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    deleted_at      TEXT                        -- 软删除 (随项目级联)
 );
 
-CREATE INDEX idx_outputs_project ON review_outputs(project_id);
-CREATE INDEX idx_outputs_type ON review_outputs(output_type);
-CREATE INDEX idx_outputs_project_type ON review_outputs(project_id, output_type);
+CREATE INDEX idx_outputs_project ON review_outputs(project_id) WHERE deleted_at IS NULL;
+CREATE INDEX idx_outputs_type ON review_outputs(output_type) WHERE deleted_at IS NULL;
+CREATE INDEX idx_outputs_project_type ON review_outputs(project_id, output_type) WHERE deleted_at IS NULL;
 ```
 
 ### 6.2 各输出类型的 content 与 structured_data 用法
@@ -535,7 +587,42 @@ CREATE INDEX idx_outputs_project_type ON review_outputs(project_id, output_type)
 | `knowledge_map`      | （通常为空）       | `{nodes: [...], edges: [...]}`                        |
 | `timeline`           | （通常为空）       | `{events: [{year, title, description, paper_ids}]}`   |
 
-### 6.3 Pydantic Model
+### 6.3 citation_verification 结构
+
+`verify_citations` 工作流节点（见[系统架构 4.1 节](system-architecture.md#四orchestrator-编排引擎设计)）生成的引用验证结果，内嵌于 `review_outputs` 中：
+
+```json
+[
+  {
+    "ref_index": 1,
+    "paper_id": "uuid-xxx",
+    "cited_as": "Chen et al., 2021",
+    "status": "verified",
+    "source": "semantic_scholar",
+    "verified_at": "2026-03-30T12:00:00Z"
+  },
+  {
+    "ref_index": 5,
+    "cited_as": "Li & Wang, 2024",
+    "status": "unverified",
+    "source": null,
+    "verified_at": "2026-03-30T12:00:02Z"
+  }
+]
+```
+
+| 字段          | 说明                                                                 |
+| ------------- | -------------------------------------------------------------------- |
+| `ref_index`   | 引用在 `references` 列表中的索引位置                                 |
+| `paper_id`    | 关联的 papers 表 ID（unverified 时可能为空）                         |
+| `cited_as`    | 正文中的引用标记文本                                                 |
+| `status`      | `"verified"` 已确认存在 · `"unverified"` 未找到 · `"pending"` 待验证 |
+| `source`      | 验证所用数据源（Semantic Scholar / CrossRef / DOI 等）               |
+| `verified_at` | 验证时间 (ISO 8601)                                                  |
+
+> **设计说明**: 引用验证结果内嵌在 `review_outputs` 而非独立建表，因为验证结果与具体的综述版本强绑定——每次重新生成或修订综述时，引用列表和验证状态需要同步更新。内嵌 JSON 避免了跨表级联更新的复杂性。
+
+### 6.4 Pydantic Model
 
 ```python
 class ReviewOutputCreate(BaseModel):
@@ -562,11 +649,12 @@ class ReviewOutputResponse(BaseModel):
     language: str
     citation_style: CitationStyle
     writing_style: str | None
+    citation_verification: list[dict] | None
     created_at: datetime
     updated_at: datetime
 ```
 
-### 6.4 Methodology Review 的 structured_data 示例
+### 6.5 Methodology Review 的 structured_data 示例
 
 ```json
 {
@@ -602,7 +690,7 @@ class ReviewOutputResponse(BaseModel):
 }
 ```
 
-### 6.5 Research Roadmap 的 structured_data 示例
+### 6.6 Research Roadmap 的 structured_data 示例
 
 ```json
 {
@@ -668,13 +756,14 @@ CREATE TABLE project_papers (
 
     -- 时间戳
     added_at        TEXT NOT NULL DEFAULT (datetime('now')),
+    deleted_at      TEXT,                       -- 软删除 (随项目级联)
 
     UNIQUE(project_id, paper_id)
 );
 
-CREATE INDEX idx_pp_project ON project_papers(project_id);
-CREATE INDEX idx_pp_paper ON project_papers(paper_id);
-CREATE INDEX idx_pp_status ON project_papers(project_id, status);
+CREATE INDEX idx_pp_project ON project_papers(project_id) WHERE deleted_at IS NULL;
+CREATE INDEX idx_pp_paper ON project_papers(paper_id) WHERE deleted_at IS NULL;
+CREATE INDEX idx_pp_status ON project_papers(project_id, status) WHERE deleted_at IS NULL;
 ```
 
 ### 7.2 Pydantic Model
@@ -701,19 +790,28 @@ class ProjectPaperResponse(BaseModel):
 ReviewState (in-memory, LangGraph)          Database Tables
 ────────────────────────────────           ──────────────
 user_query                         ◀──▶    projects.user_query
-output_type                        ◀──▶    projects.output_types
+output_types                       ◀──▶    projects.output_types
 candidate_papers                   ◀──▶    project_papers (status=candidate)
 selected_papers                    ◀──▶    project_papers (status=selected)
+uploaded_papers                    ◀──▶    project_papers (found_by='user_upload')
 paper_analyses                     ◀──▶    paper_analyses
 outline                            ◀──▶    review_outputs.outline
 full_draft                         ◀──▶    review_outputs.content
 references                         ◀──▶    review_outputs.references
+citation_verification              ◀──▶    review_outputs.citation_verification
 current_phase                      ◀──▶    projects.status
+token_usage                        ◀──▶    projects.token_usage
+token_budget                       ◀──▶    projects.token_budget
+fulltext_coverage                  ──▶     从 paper_analyses.analysis_depth 聚合计算
+feedback_search_queries            ──      仅 Checkpointer 持久化 (工作流运行时临时状态)
+feedback_iteration_count           ──      仅 Checkpointer 持久化 (工作流运行时临时状态)
 ```
 
 **设计决策**: ReviewState 是工作流运行时的完整快照。工作流完成后，最终结果回写到业务数据库。工作流运行期间，LangGraph Checkpointer 负责状态持久化和断点恢复。
 
-### 8.2 Analyst Agent 中间数据结构
+### 8.2 Analyst / Critic Agent 中间数据结构
+
+> **MVP 范围说明**: 以下数据结构供 Analyst Agent 和 Critic Agent 使用（v0.3 启用），MVP 阶段不实现。预先定义以确保数据模型的前向兼容性，后续启用时无需修改已有表结构。
 
 这些结构存在于 ReviewState 中，按需回写到 `review_outputs.structured_data`：
 
@@ -811,28 +909,29 @@ class TrendDataPoint(TypedDict):
 
 ### 11.1 MVP 包含的数据表
 
-| 表名             | MVP | 说明                 |
-| ---------------- | --- | -------------------- |
-| `projects`       | ✅   | 项目管理             |
-| `papers`         | ✅   | 论文存储（全局去重） |
-| `project_papers` | ✅   | 项目-论文关联        |
-| `paper_analyses` | ✅   | 论文分析结果         |
-| `review_outputs` | ✅   | 综述输出             |
+| 表名             | MVP | 说明                     |
+| ---------------- | --- | ------------------------ |
+| `projects`       | ✅   | 项目管理                 |
+| `papers`         | ✅   | 论文存储（全局去重）     |
+| `paper_fulltext` | ✅   | 论文全文文本（独立存储） |
+| `project_papers` | ✅   | 项目-论文关联            |
+| `paper_analyses` | ✅   | 论文分析结果             |
+| `review_outputs` | ✅   | 综述输出                 |
 
 ### 11.2 MVP 包含的输出类型
 
-| OutputType           | MVP | 说明               |
-| -------------------- | --- | ------------------ |
-| `quick_brief`        | ✅   | 快速摘要           |
-| `annotated_bib`      | ✅   | 注释文献列表       |
-| `full_review`        | ✅   | 完整综述           |
-| `methodology_review` | ✅   | 方法论综合报告     |
-| `research_roadmap`   | ✅   | 研究脉络报告       |
-| `comparison_matrix`  | —   | 需要 Analyst Agent |
-| `gap_report`         | —   | 需要 Critic Agent  |
-| `trend_report`       | —   | 需要 Analyst Agent |
-| `knowledge_map`      | —   | 需要前端可视化     |
-| `timeline`           | —   | 需要前端可视化     |
+| OutputType           | MVP | 说明                                                |
+| -------------------- | --- | --------------------------------------------------- |
+| `quick_brief`        | ✅   | 快速摘要                                            |
+| `annotated_bib`      | ✅   | 注释文献列表                                        |
+| `full_review`        | ✅   | 完整综述                                            |
+| `methodology_review` | —   | 依赖 Analyst/Critic Agent 的方法对比能力，v0.3 开放 |
+| `research_roadmap`   | —   | 依赖 Analyst/Critic Agent 的脉络分析能力，v0.3 开放 |
+| `comparison_matrix`  | —   | 需要 Analyst Agent                                  |
+| `gap_report`         | —   | 需要 Critic Agent                                   |
+| `trend_report`       | —   | 需要 Analyst Agent                                  |
+| `knowledge_map`      | —   | 需要前端可视化                                      |
+| `timeline`           | —   | 需要前端可视化                                      |
 
 ### 11.3 MVP 数据库文件
 

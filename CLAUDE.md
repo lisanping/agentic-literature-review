@@ -137,14 +137,14 @@ def agent_node(state: ReviewState) -> dict:
 
 当前处于 MVP v0.1 阶段：
 
-| 包含                                                                              | 不包含                          |
-| --------------------------------------------------------------------------------- | ------------------------------- |
-| Search + Reader + Writer Agent                                                    | Analyst / Critic / Update Agent |
-| Semantic Scholar + arXiv                                                          | OpenAlex / PubMed 等            |
-| CLI 界面                                                                          | Web 前端                        |
-| SQLite + Chroma + Redis                                                           | PostgreSQL / Neo4j              |
-| Docker Compose 单机                                                               | K8s 部署                        |
-| Quick Brief + Annotated Bib + Full Review + Methodology Review + Research Roadmap | 知识图谱 / 时间线可视化         |
+| 包含                                      | 不包含                          |
+| ----------------------------------------- | ------------------------------- |
+| Search + Reader + Writer Agent            | Analyst / Critic / Update Agent |
+| Semantic Scholar + arXiv                  | OpenAlex / PubMed 等            |
+| CLI 界面                                  | Web 前端                        |
+| SQLite + Chroma + Redis                   | PostgreSQL / Neo4j              |
+| Docker Compose 单机                       | K8s 部署                        |
+| Quick Brief + Annotated Bib + Full Review | 知识图谱 / 时间线可视化         |
 
 ## 常用命令
 
@@ -182,3 +182,14 @@ REDIS_URL=redis://localhost:6379/0       # Redis 连接
 S2_API_KEY=                              # Semantic Scholar API Key（可选，提高速率限制）
 LOG_LEVEL=INFO
 ```
+
+## 变更日志
+
+`docs/dev/CHANGELOG.md` 记录所有重要变更。**每次对项目进行实质性修改后，必须同步更新 `docs/dev/CHANGELOG.md`**，包括但不限于：
+
+- 设计文档的新增或修改
+- 代码功能的新增、变更或修复
+- 依赖项或配置的变更
+- 基础设施 / 部署相关变更
+
+格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，使用 `新增` / `变更` / `修复` / `移除` 等分类，并标注模块标签（`[设计]` `[后端]` `[前端]` `[基础设施]` `[文档]`）。
