@@ -74,6 +74,10 @@ export const MVP_OUTPUT_TYPES = [
     OutputType.QUICK_BRIEF,
     OutputType.ANNOTATED_BIB,
     OutputType.FULL_REVIEW,
+    OutputType.METHODOLOGY_REVIEW,
+    OutputType.GAP_REPORT,
+    OutputType.TREND_REPORT,
+    OutputType.RESEARCH_ROADMAP,
 ] as const;
 
 /** GPT-4o 每千 Token 价格 (美元) — 用于前端费用估算 */

@@ -24,21 +24,21 @@ def route_after_read(state: ReviewState) -> str:
 
     - If Reader found papers needing supplementary search AND
       iterations < MAX → back to ``search``
-    - Otherwise → proceed to ``generate_outline``
-      (``analyze`` is MVP-disabled; the orchestrator maps the
-       ``analyze`` target to ``generate_outline`` when analyze is off)
+    - Otherwise → proceed to ``analyze``
     """
     feedback_queries = state.get("feedback_search_queries", [])
     iteration_count = state.get("feedback_iteration_count", 0)
     if feedback_queries and iteration_count < MAX_FEEDBACK_ITERATIONS:
         return "search"
-    return "generate_outline"
+    return "analyze"
 
 
 def route_after_critique(state: ReviewState) -> str:
-    """Route after critique phase (MVP disabled).
+    """Route after critique phase.
 
-    Same logic as ``route_after_read`` but from the Critic node.
+    - If Critic generated supplementary search queries AND
+      iterations < MAX → back to ``search``
+    - Otherwise → proceed to ``generate_outline``
     """
     feedback_queries = state.get("feedback_search_queries", [])
     iteration_count = state.get("feedback_iteration_count", 0)

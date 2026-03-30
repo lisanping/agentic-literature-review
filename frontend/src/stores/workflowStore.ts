@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { ChatMessage, AgentProgress, TokenUsage, ProjectPaperResponse } from '@/types';
+import type { ChatMessage, AgentProgress, TokenUsage, ProjectPaperResponse, AnalysisResult } from '@/types';
 
 type HitlType = 'search_review' | 'outline_review' | 'draft_review' | null;
 
@@ -27,6 +27,9 @@ interface WorkflowState {
     /** Token 消耗 */
     tokenUsage: TokenUsage;
 
+    /** 分析结果 (v0.3 Analyst + Critic) */
+    analysisResult: AnalysisResult;
+
     // ── Actions ──
 
     setPhase: (phase: string | null) => void;
@@ -44,6 +47,8 @@ interface WorkflowState {
 
     updateTokenUsage: (usage: Partial<TokenUsage>) => void;
 
+    setAnalysisResult: (result: Partial<AnalysisResult>) => void;
+
     /** 重置全部状态 (切换项目时) */
     reset: () => void;
 }
@@ -58,6 +63,7 @@ const initialState = {
     hitlData: {},
     candidatePapers: [],
     tokenUsage: { total: 0, budget: null, cost: 0 } as TokenUsage,
+    analysisResult: {} as AnalysisResult,
 };
 
 let msgIdCounter = 0;
@@ -93,6 +99,11 @@ export const useWorkflowStore = create<WorkflowState>((set) => ({
     updateTokenUsage: (usage) =>
         set((state) => ({
             tokenUsage: { ...state.tokenUsage, ...usage },
+        })),
+
+    setAnalysisResult: (result) =>
+        set((state) => ({
+            analysisResult: { ...state.analysisResult, ...result },
         })),
 
     reset: () => set(initialState),

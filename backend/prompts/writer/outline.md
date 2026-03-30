@@ -15,6 +15,17 @@
 - 关键概念: {{ (analysis.key_concepts or []) | join(", ") }}
 {% endfor %}
 
+{% if topic_clusters %}
+## 主题聚类（来自 Analyst Agent）
+请参考以下聚类结果组织章节结构，每个聚类可映射为一个主要章节：
+{% for cluster in topic_clusters %}
+### 聚类: {{ cluster.name }} ({{ cluster.paper_count }} 篇)
+- 关键术语: {{ (cluster.key_terms or []) | join(", ") }}
+- 摘要: {{ cluster.summary or "无" }}
+- 包含论文: {{ (cluster.paper_ids or []) | join(", ") }}
+{% endfor %}
+{% endif %}
+
 ## 输出语言
 {{ output_language }}
 

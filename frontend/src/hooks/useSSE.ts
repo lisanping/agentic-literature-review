@@ -3,7 +3,7 @@ import { SSEClient } from '@/api/sse';
 import { getEventsUrl } from '@/api/workflow';
 import { useWorkflowStore, createMessageId } from '@/stores/workflowStore';
 import { TOKEN_COST_PER_1K } from '@/utils/constants';
-import type { ProjectPaperResponse } from '@/types';
+import type { ProjectPaperResponse, AnalystOutput, CriticOutput } from '@/types';
 
 /**
  * SSE 连接管理 Hook
@@ -22,6 +22,7 @@ export function useSSE(projectId: string | undefined, enabled: boolean) {
         updateTokenUsage,
         setPhase,
         setStatus,
+        setAnalysisResult,
     } = useWorkflowStore();
 
     const handleEvent = useCallback(
@@ -153,6 +154,34 @@ export function useSSE(projectId: string | undefined, enabled: boolean) {
                         timestamp: now,
                     });
                     break;
+
+                case 'analyze_complete':
+                    setAnalysisResult({
+                        analyst: data as unknown as AnalystOutput,
+                    });
+                    addMessage({
+                        id: createMessageId(),
+                        role: 'agent',
+                        content: '分析完成：主题聚类、方法对比、趋势分析已生成',
+                        timestamp: now,
+                        agentName: 'Analyst',
+                        collapsible: true,
+                    });
+                    break;
+
+                case 'critique_complete':
+                    setAnalysisResult({
+                        critic: data as unknown as CriticOutput,
+                    });
+                    addMessage({
+                        id: createMessageId(),
+                        role: 'agent',
+                        content: '评审完成：质量评估、矛盾检测、研究空白已生成',
+                        timestamp: now,
+                        agentName: 'Critic',
+                        collapsible: true,
+                    });
+                    break;
             }
         },
         [
@@ -164,6 +193,7 @@ export function useSSE(projectId: string | undefined, enabled: boolean) {
             updateTokenUsage,
             setPhase,
             setStatus,
+            setAnalysisResult,
         ],
     );
 

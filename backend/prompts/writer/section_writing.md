@@ -16,6 +16,24 @@
 - 局限性: {{ analysis.limitations or "未提取" }}
 {% endfor %}
 
+{% if comparison_matrix and comparison_matrix.dimensions %}
+## 方法对比参考
+{{ comparison_matrix.narrative or "" }}
+{% endif %}
+
+{% if contradictions %}
+## 文献中的矛盾
+请在写作中适当讨论以下矛盾：
+{% for c in contradictions %}
+- {{ c.topic }}: {{ c.claim_a }} vs {{ c.claim_b }} ({{ c.severity }})
+{% endfor %}
+{% endif %}
+
+{% if research_trends and research_trends.narrative %}
+## 趋势参考
+{{ research_trends.narrative }}
+{% endif %}
+
 ## 引用格式
 {{ citation_style }}
 

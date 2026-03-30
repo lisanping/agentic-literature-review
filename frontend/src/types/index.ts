@@ -15,3 +15,19 @@ export type {
     AgentProgress,
     TokenUsage,
 } from './common';
+export type {
+    TopicCluster,
+    ComparisonMatrix,
+    ComparisonDimension,
+    ComparisonMethod,
+    TimelineEntry,
+    ResearchTrends,
+    YearTrend,
+    TopicTrend,
+    AnalystOutput,
+    QualityAssessment,
+    Contradiction,
+    ResearchGap,
+    CriticOutput,
+    AnalysisResult,
+} from './analysis';

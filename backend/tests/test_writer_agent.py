@@ -1,15 +1,28 @@
-"""Tests for Writer Agent — outline, section writing, references, coherence."""
+"""Tests for Writer Agent — outline, section writing, references, coherence.
+
+v0.3 additions:
+  - Citation weight strategy tests
+  - Topic cluster–aware outline tests
+  - Specialized output type tests
+  - Research gaps section generation tests
+"""
 
 import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from app.agents.writer_agent import (
+    apply_citation_weights,
     build_references_list,
     generate_outline_node,
     revise_review_node,
     write_review_node,
+    write_specialized_output,
+    _build_gaps_section,
     _parse_json_response,
+    QUALITY_HIGH_THRESHOLD,
+    QUALITY_LOW_THRESHOLD,
+    SPECIALIZED_OUTPUT_TYPES,
 )
 
 
@@ -158,3 +171,389 @@ async def test_revise_review_node():
 
     assert "Revised Review" in result["full_draft"]
     assert result["revision_instructions"] == ""
+
+
+# ═══════════════════════════════════════════════
+#  v0.3: Citation Weight Strategy
+# ═══════════════════════════════════════════════
+
+
+def test_apply_citation_weights_sorts_by_quality():
+    analyses = [
+        {"paper_id": "low", "title": "Low Quality"},
+        {"paper_id": "high", "title": "High Quality"},
+        {"paper_id": "mid", "title": "Mid Quality"},
+    ]
+    quality_assessments = [
+        {"paper_id": "low", "quality_score": 0.2},
+        {"paper_id": "high", "quality_score": 0.9},
+        {"paper_id": "mid", "quality_score": 0.5},
+    ]
+
+    result = apply_citation_weights(analyses, quality_assessments)
+    assert result[0]["paper_id"] == "high"  # tier 0 (≥0.7)
+    assert result[1]["paper_id"] == "mid"   # tier 1 (0.3-0.7)
+    assert result[2]["paper_id"] == "low"   # tier 2 (<0.3)
+
+
+def test_apply_citation_weights_no_assessments():
+    analyses = [{"paper_id": "p1"}, {"paper_id": "p2"}]
+    result = apply_citation_weights(analyses, [])
+    assert result == analyses  # unchanged
+
+
+def test_apply_citation_weights_missing_paper():
+    analyses = [
+        {"paper_id": "p1", "title": "Known"},
+        {"paper_id": "p2", "title": "Unknown"},
+    ]
+    quality_assessments = [
+        {"paper_id": "p1", "quality_score": 0.9},
+    ]
+
+    result = apply_citation_weights(analyses, quality_assessments)
+    # p1 (0.9 → tier 0) comes first, p2 (default 0.5 → tier 1) comes second
+    assert result[0]["paper_id"] == "p1"
+    assert result[1]["paper_id"] == "p2"
+
+
+# ═══════════════════════════════════════════════
+#  v0.3: _build_gaps_section
+# ═══════════════════════════════════════════════
+
+
+def test_build_gaps_section_with_gaps():
+    gaps = [
+        {
+            "description": "Missing multilingual evaluation",
+            "priority": "high",
+            "evidence": ["Most papers use English only"],
+            "suggested_direction": "Evaluate on low-resource languages",
+        },
+        {
+            "description": "No standardized benchmark",
+            "priority": "medium",
+            "evidence": [],
+            "suggested_direction": "Propose benchmark suite",
+        },
+    ]
+    result = _build_gaps_section(gaps, "Papers share common data limitations.")
+
+    assert "Missing multilingual evaluation" in result
+    assert "高" in result  # high priority
+    assert "中" in result  # medium priority
+    assert "Evaluate on low-resource languages" in result
+    assert "共性局限总结" in result
+    assert "common data limitations" in result
+
+
+def test_build_gaps_section_empty():
+    result = _build_gaps_section([], "")
+    assert "暂无" in result
+
+
+# ═══════════════════════════════════════════════
+#  v0.3: Outline with topic_clusters
+# ═══════════════════════════════════════════════
+
+
+@pytest.mark.asyncio
+async def test_generate_outline_node_with_clusters():
+    """Outline generation passes topic_clusters to prompt."""
+    captured_kwargs = {}
+
+    mock_llm = MagicMock()
+    mock_llm.call = AsyncMock(return_value=(
+        json.dumps({
+            "title": "Clustered Review",
+            "sections": [
+                {"heading": "Supervised Methods", "description": "Cluster 1", "relevant_paper_indices": [1]},
+                {"heading": "Unsupervised Methods", "description": "Cluster 2", "relevant_paper_indices": [2]},
+            ],
+        }),
+        {"total_input": 200, "total_output": 100, "by_agent": {}},
+    ))
+    mock_pm = MagicMock()
+
+    def capture_render(agent, template, **kwargs):
+        captured_kwargs.update(kwargs)
+        return "prompt"
+
+    mock_pm.render.side_effect = capture_render
+
+    state = {
+        "user_query": "deep learning",
+        "paper_analyses": [
+            {"title": "Paper 1", "objective": "O1"},
+            {"title": "Paper 2", "objective": "O2"},
+        ],
+        "output_types": ["full_review"],
+        "output_language": "zh",
+        "topic_clusters": [
+            {"id": "c0", "name": "Supervised", "paper_count": 1, "key_terms": ["supervised"]},
+            {"id": "c1", "name": "Unsupervised", "paper_count": 1, "key_terms": ["unsupervised"]},
+        ],
+    }
+
+    result = await generate_outline_node(state, llm=mock_llm, prompt_manager=mock_pm)
+
+    # Verify clusters were passed to the prompt
+    assert "topic_clusters" in captured_kwargs
+    assert len(captured_kwargs["topic_clusters"]) == 2
+    assert result["outline"]["title"] == "Clustered Review"
+
+
+# ═══════════════════════════════════════════════
+#  v0.3: Write review with analyst/critic data
+# ═══════════════════════════════════════════════
+
+
+@pytest.mark.asyncio
+async def test_write_review_node_with_analyst_critic_data():
+    """Write review passes comparison_matrix, contradictions, research_trends to sections."""
+    captured_render_calls = []
+
+    call_count = 0
+
+    async def mock_call(prompt, agent_name, task_type, token_usage=None, **kw):
+        nonlocal call_count
+        call_count += 1
+        return f"Section {call_count} content.", {
+            "total_input": 100, "total_output": 50, "by_agent": {},
+        }
+
+    mock_llm = MagicMock()
+    mock_llm.call = AsyncMock(side_effect=mock_call)
+    mock_pm = MagicMock()
+
+    def capture_render(agent, template, **kwargs):
+        captured_render_calls.append({"agent": agent, "template": template, **kwargs})
+        return "prompt"
+
+    mock_pm.render.side_effect = capture_render
+
+    state = {
+        "user_query": "test",
+        "outline": {
+            "title": "Review",
+            "sections": [
+                {"heading": "Intro", "description": "Background", "relevant_paper_indices": [1]},
+            ],
+        },
+        "paper_analyses": [
+            {"title": "P1", "paper_id": "1", "authors": ["A"], "year": 2024},
+        ],
+        "citation_style": "apa",
+        "output_language": "zh",
+        "output_types": ["full_review"],
+        "comparison_matrix": {"title": "Matrix", "dimensions": [], "methods": [], "narrative": "Method comparison."},
+        "contradictions": [{"topic": "Speed", "claim_a": "Fast", "claim_b": "Slow", "severity": "minor"}],
+        "research_trends": {"by_year": [], "by_topic": [], "narrative": "Rising trend."},
+        "research_gaps": [],
+        "quality_assessments": [],
+    }
+
+    result = await write_review_node(state, llm=mock_llm, prompt_manager=mock_pm)
+
+    # Verify section_writing render call received analyst/critic context
+    section_calls = [c for c in captured_render_calls if c["template"] == "section_writing"]
+    assert len(section_calls) >= 1
+    assert "comparison_matrix" in section_calls[0]
+    assert "contradictions" in section_calls[0]
+    assert "research_trends" in section_calls[0]
+    assert result["current_phase"] == "draft_review"
+
+
+@pytest.mark.asyncio
+async def test_write_review_node_auto_gaps_section():
+    """Full review auto-appends Research Gaps section when gaps exist."""
+    call_count = 0
+
+    async def mock_call(prompt, agent_name, task_type, token_usage=None, **kw):
+        nonlocal call_count
+        call_count += 1
+        return f"Section content {call_count}.", {
+            "total_input": 100, "total_output": 50, "by_agent": {},
+        }
+
+    mock_llm = MagicMock()
+    mock_llm.call = AsyncMock(side_effect=mock_call)
+    mock_pm = MagicMock()
+    mock_pm.render.return_value = "prompt"
+
+    state = {
+        "user_query": "test",
+        "outline": {
+            "title": "Review",
+            "sections": [
+                {"heading": "Intro", "description": "Background", "relevant_paper_indices": []},
+            ],
+        },
+        "paper_analyses": [
+            {"title": "P1", "paper_id": "1", "authors": ["A"], "year": 2024},
+        ],
+        "citation_style": "apa",
+        "output_language": "zh",
+        "output_types": ["full_review"],
+        "research_gaps": [
+            {"description": "Gap 1", "priority": "high", "evidence": ["e1"],
+             "suggested_direction": "direction"},
+        ],
+        "limitation_summary": "Common limitation text.",
+        "quality_assessments": [],
+    }
+
+    result = await write_review_node(state, llm=mock_llm, prompt_manager=mock_pm)
+
+    assert "Research Gaps" in result["full_draft"]
+    assert "Gap 1" in result["full_draft"]
+    assert "Common limitation text" in result["full_draft"]
+    # sections: 1 outline section + 1 auto-generated gaps section = 2
+    assert len(result["draft_sections"]) == 2
+
+
+# ═══════════════════════════════════════════════
+#  v0.3: Specialized Output Types
+# ═══════════════════════════════════════════════
+
+
+@pytest.mark.asyncio
+async def test_write_specialized_methodology_review():
+    mock_llm = MagicMock()
+    mock_llm.call = AsyncMock(return_value=(
+        "# Methodology Review\n\nComparison of methods...",
+        {"total_input": 200, "total_output": 150, "by_agent": {}},
+    ))
+    mock_pm = MagicMock()
+    mock_pm.render.return_value = "prompt"
+
+    state = {
+        "comparison_matrix": {"title": "Matrix", "dimensions": [], "methods": [], "narrative": ""},
+    }
+
+    content, usage = await write_specialized_output(
+        output_type="methodology_review",
+        analyses=[{"title": "P1", "paper_id": "1"}],
+        user_query="test",
+        output_language="zh",
+        state=state,
+        llm=mock_llm,
+        prompt_manager=mock_pm,
+    )
+
+    assert "Methodology Review" in content
+    mock_pm.render.assert_called_once()
+    render_kwargs = mock_pm.render.call_args
+    assert render_kwargs[0] == ("writer", "methodology_review")
+
+
+@pytest.mark.asyncio
+async def test_write_specialized_gap_report():
+    mock_llm = MagicMock()
+    mock_llm.call = AsyncMock(return_value=(
+        "# Gap Report\n\nResearch gaps identified...",
+        {"total_input": 200, "total_output": 150, "by_agent": {}},
+    ))
+    mock_pm = MagicMock()
+    mock_pm.render.return_value = "prompt"
+
+    state = {
+        "research_gaps": [{"description": "Gap"}],
+        "contradictions": [],
+        "limitation_summary": "Limitations.",
+        "topic_clusters": [],
+    }
+
+    content, usage = await write_specialized_output(
+        output_type="gap_report",
+        analyses=[],
+        user_query="test",
+        output_language="en",
+        state=state,
+        llm=mock_llm,
+        prompt_manager=mock_pm,
+    )
+
+    assert "Gap Report" in content
+
+
+@pytest.mark.asyncio
+async def test_write_review_node_specialized_output():
+    """write_review_node uses specialized writer for methodology_review."""
+    mock_llm = MagicMock()
+    mock_llm.call = AsyncMock(return_value=(
+        "# Methodology Review\n\nDetailed method comparison.",
+        {"total_input": 200, "total_output": 150, "by_agent": {}},
+    ))
+    mock_pm = MagicMock()
+    mock_pm.render.return_value = "prompt"
+
+    state = {
+        "user_query": "test",
+        "outline": {},
+        "paper_analyses": [
+            {"title": "P1", "paper_id": "1", "authors": ["A"], "year": 2024},
+        ],
+        "citation_style": "apa",
+        "output_language": "zh",
+        "output_types": ["methodology_review"],
+        "comparison_matrix": {"title": "M", "dimensions": [], "methods": [], "narrative": ""},
+        "quality_assessments": [],
+    }
+
+    result = await write_review_node(state, llm=mock_llm, prompt_manager=mock_pm)
+
+    assert "Methodology Review" in result["full_draft"]
+    assert result["current_phase"] == "draft_review"
+    assert len(result["references"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_write_review_node_citation_weight_order():
+    """High-quality papers should appear first in references."""
+    call_count = 0
+
+    async def mock_call(prompt, agent_name, task_type, token_usage=None, **kw):
+        nonlocal call_count
+        call_count += 1
+        return "Content.", {"total_input": 50, "total_output": 30, "by_agent": {}}
+
+    mock_llm = MagicMock()
+    mock_llm.call = AsyncMock(side_effect=mock_call)
+    mock_pm = MagicMock()
+    mock_pm.render.return_value = "prompt"
+
+    state = {
+        "user_query": "test",
+        "outline": {
+            "title": "Review",
+            "sections": [{"heading": "S", "description": "D", "relevant_paper_indices": []}],
+        },
+        "paper_analyses": [
+            {"title": "Low Paper", "paper_id": "low", "authors": ["A"], "year": 2024},
+            {"title": "High Paper", "paper_id": "high", "authors": ["B"], "year": 2023},
+        ],
+        "citation_style": "apa",
+        "output_language": "zh",
+        "output_types": ["full_review"],
+        "quality_assessments": [
+            {"paper_id": "low", "quality_score": 0.2},
+            {"paper_id": "high", "quality_score": 0.9},
+        ],
+    }
+
+    result = await write_review_node(state, llm=mock_llm, prompt_manager=mock_pm)
+
+    # References should be ordered: high first, low last
+    refs = result["references"]
+    assert refs[0]["paper_id"] == "high"
+    assert refs[1]["paper_id"] == "low"
+
+
+def test_specialized_output_types_set():
+    """Verify the set of supported specialized output types."""
+    assert "methodology_review" in SPECIALIZED_OUTPUT_TYPES
+    assert "gap_report" in SPECIALIZED_OUTPUT_TYPES
+    assert "trend_report" in SPECIALIZED_OUTPUT_TYPES
+    assert "research_roadmap" in SPECIALIZED_OUTPUT_TYPES
+    assert "full_review" not in SPECIALIZED_OUTPUT_TYPES

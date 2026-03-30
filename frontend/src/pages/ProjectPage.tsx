@@ -5,6 +5,7 @@ import {
     PlayCircleOutlined,
     StopOutlined,
     FileTextOutlined,
+    ExperimentOutlined,
 } from '@ant-design/icons';
 import { useProjects } from '@/hooks/useProjects';
 import { useWorkflow } from '@/hooks/useWorkflow';
@@ -22,6 +23,10 @@ import ReviewPreview from '@/components/Review/ReviewPreview';
 import OutlineTree from '@/components/Review/OutlineTree';
 import CitationSummary from '@/components/Review/CitationSummary';
 import ExportButton from '@/components/Review/ExportButton';
+import ClusterView from '@/components/Analysis/ClusterView';
+import ComparisonTable from '@/components/Analysis/ComparisonTable';
+import TrendChart from '@/components/Analysis/TrendChart';
+import GapList from '@/components/Analysis/GapList';
 import Loading from '@/components/Common/Loading';
 
 const { Title, Text } = Typography;
@@ -55,6 +60,7 @@ export default function ProjectPage() {
         hitlData,
         candidatePapers,
         tokenUsage,
+        analysisResult,
     } = useWorkflowStore();
 
     const [project, setProject] = useState<Awaited<ReturnType<typeof fetchProject>> | null>(null);
@@ -293,6 +299,64 @@ export default function ProjectPage() {
                                 </div>
                             ),
                         },
+                        // 分析 Tab (有分析数据时显示)
+                        ...((analysisResult.analyst || analysisResult.critic)
+                            ? [
+                                {
+                                    key: 'analysis',
+                                    label: (
+                                        <span>
+                                            <ExperimentOutlined /> 分析
+                                        </span>
+                                    ),
+                                    children: (
+                                        <div style={{ padding: '8px 4px' }}>
+                                            {analysisResult.analyst?.topic_clusters && (
+                                                <div style={{ marginBottom: 16 }}>
+                                                    <Text strong style={{ fontSize: 13, display: 'block', marginBottom: 8 }}>
+                                                        主题聚类
+                                                    </Text>
+                                                    <ClusterView clusters={analysisResult.analyst.topic_clusters} />
+                                                </div>
+                                            )}
+
+                                            {analysisResult.analyst?.comparison_matrix && (
+                                                <div style={{ marginBottom: 16 }}>
+                                                    <Text strong style={{ fontSize: 13, display: 'block', marginBottom: 8 }}>
+                                                        方法对比
+                                                    </Text>
+                                                    <ComparisonTable matrix={analysisResult.analyst.comparison_matrix} />
+                                                </div>
+                                            )}
+
+                                            {analysisResult.analyst?.research_trends && (
+                                                <div style={{ marginBottom: 16 }}>
+                                                    <Text strong style={{ fontSize: 13, display: 'block', marginBottom: 8 }}>
+                                                        研究趋势
+                                                    </Text>
+                                                    <TrendChart trends={analysisResult.analyst.research_trends} />
+                                                </div>
+                                            )}
+
+                                            {(analysisResult.critic?.research_gaps ||
+                                                analysisResult.critic?.contradictions ||
+                                                analysisResult.critic?.limitation_summary) && (
+                                                    <div style={{ marginBottom: 16 }}>
+                                                        <Text strong style={{ fontSize: 13, display: 'block', marginBottom: 8 }}>
+                                                            研究空白与评审
+                                                        </Text>
+                                                        <GapList
+                                                            gaps={analysisResult.critic?.research_gaps || []}
+                                                            contradictions={analysisResult.critic?.contradictions}
+                                                            limitationSummary={analysisResult.critic?.limitation_summary}
+                                                        />
+                                                    </div>
+                                                )}
+                                        </div>
+                                    ),
+                                },
+                            ]
+                            : []),
                         {
                             key: 'token',
                             label: 'Token',

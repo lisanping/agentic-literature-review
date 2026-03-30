@@ -65,6 +65,8 @@ export class SSEClient {
             'paper_read',
             'hitl_pause',
             'token_update',
+            'analyze_complete',
+            'critique_complete',
             'warning',
             'error',
             'complete',

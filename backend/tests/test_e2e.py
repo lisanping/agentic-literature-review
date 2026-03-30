@@ -366,6 +366,33 @@ async def test_full_workflow_e2e_mock_agents():
             return {"feedback_iteration_count": count + 1}
         return {}
 
+    async def _analyze(state):
+        return {
+            "topic_clusters": [{"id": "c0", "name": "Cluster", "paper_ids": [], "paper_count": 0}],
+            "comparison_matrix": {"title": "M", "dimensions": [], "methods": [], "narrative": ""},
+            "citation_network": {"nodes": [], "edges": [], "key_papers": [], "bridge_papers": []},
+            "timeline": [],
+            "research_trends": {"by_year": [], "by_topic": [], "emerging_topics": [], "narrative": ""},
+            "current_phase": "critiquing",
+        }
+
+    async def _critique(state):
+        return {
+            "quality_assessments": [],
+            "contradictions": [],
+            "research_gaps": [],
+            "limitation_summary": "",
+            "feedback_search_queries": [],
+            "current_phase": "outlining",
+        }
+
+    async def _check_critic_feedback(state):
+        feedback = state.get("feedback_search_queries", [])
+        if feedback:
+            count = state.get("feedback_iteration_count", 0)
+            return {"feedback_iteration_count": count + 1}
+        return {}
+
     async def _generate_outline(state):
         analyses = state.get("paper_analyses", [])
         return {
@@ -422,6 +449,9 @@ async def test_full_workflow_e2e_mock_agents():
     reg.register("human_review_search", _human_review_search)
     reg.register("read", _read)
     reg.register("check_read_feedback", _check_read_feedback)
+    reg.register("analyze", _analyze)
+    reg.register("critique", _critique)
+    reg.register("check_critic_feedback", _check_critic_feedback)
     reg.register("generate_outline", _generate_outline)
     reg.register("human_review_outline", _human_review_outline)
     reg.register("write_review", _write_review)
@@ -506,6 +536,23 @@ async def test_full_workflow_e2e_with_revision():
     async def _check_read_feedback(state):
         return {}
 
+    async def _analyze_stub(state):
+        return {
+            "topic_clusters": [], "comparison_matrix": {"title": "", "dimensions": [], "methods": [], "narrative": ""},
+            "citation_network": {"nodes": [], "edges": [], "key_papers": [], "bridge_papers": []},
+            "timeline": [], "research_trends": {"by_year": [], "by_topic": [], "emerging_topics": [], "narrative": ""},
+            "current_phase": "critiquing",
+        }
+
+    async def _critique_stub(state):
+        return {
+            "quality_assessments": [], "contradictions": [], "research_gaps": [],
+            "limitation_summary": "", "feedback_search_queries": [], "current_phase": "outlining",
+        }
+
+    async def _check_critic_feedback_stub(state):
+        return {}
+
     async def _generate_outline(state):
         return {"outline": {"title": "Review", "sections": [{"heading": "Intro", "description": "Bg"}]}, "current_phase": "outline_review"}
 
@@ -531,6 +578,8 @@ async def test_full_workflow_e2e_with_revision():
         ("parse_intent", _parse_intent), ("search", _search),
         ("human_review_search", _human_review_search), ("read", _read),
         ("check_read_feedback", _check_read_feedback),
+        ("analyze", _analyze_stub), ("critique", _critique_stub),
+        ("check_critic_feedback", _check_critic_feedback_stub),
         ("generate_outline", _generate_outline),
         ("human_review_outline", _human_review_outline),
         ("write_review", _write_review), ("verify_citations", _verify_citations),
@@ -600,6 +649,23 @@ async def test_full_workflow_e2e_feedback_loop():
             return {"feedback_iteration_count": state.get("feedback_iteration_count", 0) + 1}
         return {}
 
+    async def _analyze_stub2(state):
+        return {
+            "topic_clusters": [], "comparison_matrix": {"title": "", "dimensions": [], "methods": [], "narrative": ""},
+            "citation_network": {"nodes": [], "edges": [], "key_papers": [], "bridge_papers": []},
+            "timeline": [], "research_trends": {"by_year": [], "by_topic": [], "emerging_topics": [], "narrative": ""},
+            "current_phase": "critiquing",
+        }
+
+    async def _critique_stub2(state):
+        return {
+            "quality_assessments": [], "contradictions": [], "research_gaps": [],
+            "limitation_summary": "", "feedback_search_queries": [], "current_phase": "outlining",
+        }
+
+    async def _check_critic_feedback_stub2(state):
+        return {}
+
     async def _generate_outline(state):
         return {"outline": {"title": "Rev", "sections": [{"heading": "I", "description": "D"}]}, "current_phase": "outline_review"}
 
@@ -625,6 +691,8 @@ async def test_full_workflow_e2e_feedback_loop():
         ("parse_intent", _parse_intent), ("search", _search),
         ("human_review_search", _human_review_search), ("read", _read),
         ("check_read_feedback", _check_read_feedback),
+        ("analyze", _analyze_stub2), ("critique", _critique_stub2),
+        ("check_critic_feedback", _check_critic_feedback_stub2),
         ("generate_outline", _generate_outline),
         ("human_review_outline", _human_review_outline),
         ("write_review", _write_review), ("verify_citations", _verify_citations),

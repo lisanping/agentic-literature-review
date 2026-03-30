@@ -18,6 +18,7 @@ from app.agents.routing import (
 from app.agents.orchestrator import (
     build_review_graph,
     check_read_feedback,
+    check_critic_feedback,
     compile_review_graph,
     human_review_draft,
     human_review_outline,
@@ -59,15 +60,15 @@ class TestRouteAfterRead:
             "feedback_search_queries": ["query"],
             "feedback_iteration_count": MAX_FEEDBACK_ITERATIONS,
         }
-        assert route_after_read(state) == "generate_outline"
+        assert route_after_read(state) == "analyze"
 
     def test_no_feedback(self):
         state = {"feedback_search_queries": [], "feedback_iteration_count": 0}
-        assert route_after_read(state) == "generate_outline"
+        assert route_after_read(state) == "analyze"
 
     def test_empty_queries(self):
         state = {}
-        assert route_after_read(state) == "generate_outline"
+        assert route_after_read(state) == "analyze"
 
 
 class TestRouteAfterCritique:
@@ -162,6 +163,20 @@ async def test_check_read_feedback_no_queries():
     assert result == {}
 
 
+@pytest.mark.asyncio
+async def test_check_critic_feedback_with_queries():
+    state = {"feedback_search_queries": ["gap query"], "feedback_iteration_count": 0}
+    result = await check_critic_feedback(state)
+    assert result["feedback_iteration_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_check_critic_feedback_no_queries():
+    state = {"feedback_search_queries": []}
+    result = await check_critic_feedback(state)
+    assert result == {}
+
+
 # ═══════════════════════════════════════════════
 #  Config loading tests
 # ═══════════════════════════════════════════════
@@ -186,8 +201,9 @@ def test_disabled_nodes_in_config():
         for n in config["workflow"]["nodes"]
         if not n.get("enabled", True)
     ]
-    assert "analyze" in disabled
-    assert "critique" in disabled
+    # v0.3: analyze + critique are now enabled
+    assert "analyze" not in disabled
+    assert "critique" not in disabled
 
 
 # ═══════════════════════════════════════════════
@@ -198,10 +214,11 @@ def test_disabled_nodes_in_config():
 def test_build_review_graph_node_count():
     graph = build_review_graph()
     node_names = list(graph.nodes.keys())
-    # MVP: 12 enabled nodes (analyze + critique disabled)
-    assert len(node_names) == 12
-    assert "analyze" not in node_names
-    assert "critique" not in node_names
+    # v0.3: 15 enabled nodes (analyze + critique + check_critic_feedback added)
+    assert len(node_names) == 15
+    assert "analyze" in node_names
+    assert "critique" in node_names
+    assert "check_critic_feedback" in node_names
     assert "revise_review" in node_names
 
 
@@ -288,6 +305,33 @@ def _make_mock_registry():
             "current_phase": "outline_review",
         }
 
+    async def _analyze(state):
+        return {
+            "topic_clusters": [{"id": "c0", "name": "Cluster 0", "paper_ids": [], "paper_count": 0}],
+            "comparison_matrix": {"title": "Matrix", "dimensions": [], "methods": [], "narrative": ""},
+            "citation_network": {"nodes": [], "edges": [], "key_papers": [], "bridge_papers": []},
+            "timeline": [],
+            "research_trends": {"by_year": [], "by_topic": [], "emerging_topics": [], "narrative": ""},
+            "current_phase": "critiquing",
+        }
+
+    async def _critique(state):
+        return {
+            "quality_assessments": [],
+            "contradictions": [],
+            "research_gaps": [],
+            "limitation_summary": "",
+            "feedback_search_queries": [],
+            "current_phase": "outlining",
+        }
+
+    async def _check_critic_feedback(state):
+        feedback = state.get("feedback_search_queries", [])
+        count = state.get("feedback_iteration_count", 0)
+        if feedback:
+            return {"feedback_iteration_count": count + 1}
+        return {}
+
     async def _human_review_outline(state):
         return {"current_phase": "writing"}
 
@@ -320,6 +364,9 @@ def _make_mock_registry():
     reg.register("read", _read)
     reg.register("check_read_feedback", _check_read_feedback)
     reg.register("generate_outline", _generate_outline)
+    reg.register("analyze", _analyze)
+    reg.register("critique", _critique)
+    reg.register("check_critic_feedback", _check_critic_feedback)
     reg.register("human_review_outline", _human_review_outline)
     reg.register("write_review", _write_review)
     reg.register("verify_citations", _verify_citations)

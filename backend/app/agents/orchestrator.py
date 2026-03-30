@@ -56,11 +56,25 @@ async def check_read_feedback(state: ReviewState) -> dict:
     return {}
 
 
+async def check_critic_feedback(state: ReviewState) -> dict:
+    """Check whether Critic generated supplementary search queries.
+
+    Increments ``feedback_iteration_count`` when feedback queries exist,
+    so the routing function can enforce the max-iteration cap.
+    """
+    feedback = state.get("feedback_search_queries", [])
+    iteration = state.get("feedback_iteration_count", 0)
+    if feedback:
+        return {"feedback_iteration_count": iteration + 1}
+    return {}
+
+
 # Register the lightweight / HITL nodes that aren't full agents
 agent_registry.register("human_review_search", human_review_search)
 agent_registry.register("human_review_outline", human_review_outline)
 agent_registry.register("human_review_draft", human_review_draft)
 agent_registry.register("check_read_feedback", check_read_feedback)
+agent_registry.register("check_critic_feedback", check_critic_feedback)
 
 
 # ── Config loading ──
@@ -240,6 +254,8 @@ def _ensure_agents_imported():
     import app.agents.intent_parser   # noqa: F401
     import app.agents.search_agent    # noqa: F401
     import app.agents.reader_agent    # noqa: F401
+    import app.agents.analyst_agent   # noqa: F401
+    import app.agents.critic_agent    # noqa: F401
     import app.agents.writer_agent    # noqa: F401
     import app.agents.verify_citations  # noqa: F401
     import app.agents.export_node     # noqa: F401

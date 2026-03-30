@@ -11,6 +11,117 @@
 
 ### 新增
 
+- `[后端]` Critic Agent DB 回写（阶段 2 遗留项 §2.8 完成）：
+  - `_persist_quality_scores()` 函数：将 quality_score + justification 写入 `paper_analyses` 表的 `quality_score` / `quality_notes` 字段
+  - `critique_node` 在评估完成后自动调用，仅当 state 含 `project_id` 时触发
+  - Best-effort 策略：DB 写入失败仅 warning 不阻塞工作流（评分数据已在 state 中传递给下游）
+  - 5 个新增测试：DB 写入验证、缺失论文跳过、空列表 no-op、有/无 project_id 条件分支
+- `[后端]` v0.3 E2E 测试 8 个 (`tests/test_e2e_v03.py`)：
+  - 完整 6-Agent HITL 生命周期：search → read → analyze → critique → outline → write → export
+  - Critic 反馈环路触发补充搜索（初始 + 1 feedback = 2 次搜索）
+  - 4 种专用输出类型各一个完整管线测试：methodology_review / gap_report / trend_report / research_roadmap
+  - 草稿修订 + Analyst/Critic 数据持久化验证
+  - 图节点完整性验证（15 节点）
+- `[后端]` v0.3 Live E2E 测试 3 个 (`tests/test_e2e_live_v03.py`，`@pytest.mark.live`）：
+  - Analyst Agent 真实 LLM 调用：验证 topic_clusters / comparison_matrix / timeline / trends 结构
+  - Critic Agent 真实 LLM 调用：验证 quality_score (0-1) / research_gaps / limitation_summary
+  - Writer Agent 真实 LLM + Analyst/Critic 上下文：验证大纲引用 clusters、综述含分析数据
+- `[文档]` README.md 更新：
+  - 功能特性新增 Analyst / Critic 描述、多种输出类型、前端可视化
+  - 系统架构图更新为 6-Agent (15 节点) DAG
+  - 项目结构新增 analyst_agent.py / critic_agent.py
+- `[前端]` 前端分析结果展示 v0.3 阶段 5 完成：
+  - 分析类型定义 (`types/analysis.ts`)：TopicCluster / ComparisonMatrix / ResearchTrends / QualityAssessment / Contradiction / ResearchGap 等完整类型
+  - `ClusterView` 组件：可折叠的主题聚类列表，显示关键术语和摘要
+  - `ComparisonTable` 组件：Ant Design Table 渲染方法对比矩阵，支持多维度对比
+  - `TrendChart` 组件：纯 CSS 柱状图 + 主题趋势方向 + 新兴主题展示
+  - `GapList` 组件：研究空白列表（优先级标签 + 建议方向）、矛盾折叠面板、局限性汇总
+  - `QualityBadge` 组件：质量评分圆点标识（绿/黄/红），集成到 PaperCard
+  - `ProjectPage` 右侧面板新增「分析」Tab，条件渲染聚类/对比/趋势/空白
+  - SSE 事件处理扩展：`analyze_complete` / `critique_complete` 事件存入 workflowStore
+  - workflowStore 新增 `analysisResult` 状态 + `setAnalysisResult` action
+  - SSEClient 事件类型注册扩展：`analyze_complete` / `critique_complete`
+  - 输出类型解锁：MVP_OUTPUT_TYPES 新增 methodology_review / gap_report / trend_report / research_roadmap
+
+- `[后端]` Analyst Agent 核心实现 (`app/agents/analyst_agent.py`)：v0.3 阶段 1 完成
+  - 主题聚类：基于 method_category 分组 + key_concept 重叠度的混合聚类算法，LLM 自动命名/总结
+  - 方法对比矩阵：从 paper_analyses 提取方法信息 → LLM 生成维度/值/叙事解读
+  - 引文网络构建：纯算法构建有向图，自动标注 foundational/bridge/recent/peripheral 角色
+  - 时间线：按年份分组 + LLM 识别里程碑事件
+  - 趋势分析：年度/主题统计 + LLM 趋势方向判断和新兴主题识别
+  - 论文数量阈值控制：< 5 跳过、> 200 取 Top 100
+  - 注册到 agent_registry，遵循统一 Node 签名
+- `[后端]` Analyst Prompt 模板 4 个 (`prompts/analyst/`)：
+  - `topic_clustering.md`：聚类命名与总结
+  - `comparison_matrix.md`：方法对比矩阵生成
+  - `timeline_milestones.md`：研究里程碑识别
+  - `trend_analysis.md`：趋势解读与新兴方向识别
+- `[后端]` Analyst Agent 单元测试 31 个 (`tests/test_analyst_agent.py`)：
+  - 覆盖 JSON 解析、聚类算法、引文网络、时间线、趋势统计等纯算法函数
+  - Mock LLM 测试聚类命名、对比矩阵、时间线、趋势分析等 LLM 调用
+  - analyze_node 集成测试：跳过逻辑、完整流程、大规模输入截断
+- `[后端]` Orchestrator 注册 Analyst Agent import (`app/agents/orchestrator.py`)
+- `[后端]` Critic Agent 核心实现 (`app/agents/critic_agent.py`)：v0.3 阶段 2 完成
+  - 质量评分器：LLM rigor_score (0-10) + 被引数归一化 + venue_tier → 综合 quality_score (0-1)
+  - 矛盾检测器：同聚类内论文对逐对比较（每聚类最多 10 对），LLM 判断矛盾内容及严重程度
+  - 研究空白识别：基于聚类覆盖 + 趋势分析 → LLM 推断空白 + 优先级 + 建议方向
+  - 局限性汇总：聚合所有论文 limitations → LLM 生成 300-500 字叙事文本
+  - 反馈查询生成：检查覆盖/时间/方法空白 → 自动生成 feedback_search_queries
+  - 批量评估支持（每批 10 篇）、注册到 agent_registry
+- `[后端]` Critic Prompt 模板 4 个 (`prompts/critic/`)：
+  - `quality_assessment.md`：方法学严谨性评分 (Rubric: 研究设计/数据质量/统计分析/结论可靠性)
+  - `contradiction_detection.md`：同聚类论文对矛盾检测
+  - `gap_identification.md`：研究空白识别与搜索查询建议
+  - `limitation_summary.md`：四维度局限性叙事汇总
+- `[后端]` Critic Agent 单元测试 29 个 (`tests/test_critic_agent.py`)：
+  - 覆盖质量评分公式、聚类论文对构建、反馈查询生成等纯算法函数
+  - Mock LLM 测试批量质量评估、矛盾检测、空白识别、局限性汇总
+  - critique_node 集成测试：空数据、完整流程、反馈查询生成
+- `[后端]` Orchestrator 注册 Critic Agent import (`app/agents/orchestrator.py`)
+- `[后端]` 编排层集成 v0.3 阶段 3 完成：
+  - 启用 workflow.yaml 中 analyze + critique + check_critic_feedback 节点
+  - `check_critic_feedback` 节点实现（`app/agents/orchestrator.py`）：检查 Critic 反馈并驱动循环
+  - `route_after_read` 路由更新：continue 目标从 `generate_outline` 改为 `analyze`
+  - `check_read_feedback` 条件边目标更新为 `[search, analyze]`
+  - `check_critic_feedback` 条件边启用，目标 `[search, generate_outline]`
+  - 全部 15 个节点的 6-Agent 完整 DAG 构建验证
+- `[后端]` v0.3 集成测试 6 个 (`tests/test_workflow_v03.py`)：
+  - 完整 6-Agent DAG 无中断执行
+  - 6-Agent DAG + HITL 暂停/恢复
+  - Critic 反馈环路触发补充搜索
+  - 反馈环路 max_feedback_iterations 限制验证
+  - Analyst 输出传递至 Critic 验证
+  - 图节点完整性验证（15 个节点）
+- `[后端]` Writer Agent 增强 v0.3 阶段 4 完成（`app/agents/writer_agent.py`）：
+  - 大纲生成增强：接收 `topic_clusters` 传递给 Prompt，LLM 按聚类组织章节
+  - 章节写作增强：传递 `comparison_matrix`、`contradictions`、`research_trends` 到 section_writing Prompt
+  - 引用权重策略：`quality_score ≥ 0.7` 优先排序 / `< 0.3` 后置，影响引用列表和论文顺序
+  - 自动研究空白章节：full_review 输出自动追加 "Research Gaps & Future Directions" 章节
+  - 专用输出类型路由：methodology_review / gap_report / trend_report / research_roadmap 使用独立 Prompt
+  - `write_specialized_output()` 函数：根据 output_type 选择对应 Prompt + 注入对应 state 数据
+- `[后端]` Writer Prompt 模板 4 个新增（`prompts/writer/`）：
+  - `methodology_review.md`：方法论综述（含对比矩阵叙事）
+  - `gap_report.md`：研究空白报告（含矛盾、局限性、建议方向）
+  - `trend_report.md`：趋势分析报告（含时间线、年度统计、新兴主题）
+  - `research_roadmap.md`：研究路线图（短/中/长期规划、依赖关系）
+- `[后端]` Writer Prompt 模板 2 个增强（`prompts/writer/`）：
+  - `outline.md`：新增 topic_clusters 上下文注入
+  - `section_writing.md`：新增 comparison_matrix / contradictions / research_trends 上下文
+- `[后端]` Writer Agent 测试增加 13 个（`tests/test_writer_agent.py`，共 21 个）：
+  - 引用权重排序、空评估兜底、缺失论文默认值
+  - 研究空白章节生成（有数据 / 空数据）
+  - 聚类感知大纲生成（验证 topic_clusters 传递）
+  - 分析/评估上下文传递验证
+  - 自动 gaps 章节追加
+  - 专用输出类型测试（methodology_review、gap_report）
+  - 引用权重下参考文献排序验证
+
+### 变更
+
+- `[后端]` `route_after_read()` 返回 `"analyze"` 替代 `"generate_outline"`（`app/agents/routing.py`）
+- `[后端]` workflow.yaml 启用 analyze / critique / check_critic_feedback 节点和边
+- `[后端]` 更新已有工作流测试和 E2E 测试以适配 v0.3 编排变更
+
 - `[设计]` v0.3 实施计划文档 (`docs/dev/v03-implementation-plan.md`)：Analyst Agent + Critic Agent 完整设计
   - 混合分析策略 (Embedding 聚类 + LLM 语义解读)、LLM-Driven 质量评估 + Bibliometric 信号
   - Analyst 输出结构设计：topic_clusters、comparison_matrix、timeline、citation_network、research_trends

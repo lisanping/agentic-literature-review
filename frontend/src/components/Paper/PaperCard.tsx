@@ -1,6 +1,7 @@
 import { Tag, Typography, Space, Tooltip } from 'antd';
 import { FileTextOutlined, FilePdfOutlined } from '@ant-design/icons';
 import type { ProjectPaperResponse } from '@/types';
+import QualityBadge from '@/components/Analysis/QualityBadge';
 
 const { Text, Paragraph } = Typography;
 
@@ -78,6 +79,7 @@ export default function PaperCard({ item, selected, onClick }: PaperCardProps) {
                     {paper.pdf_available ? '📄 全文' : '📋 仅摘要'}
                 </Tag>
                 <RelevanceDots score={item.relevance_rank} />
+                <QualityBadge score={item.paper.analysis?.quality_score ?? null} />
             </Space>
 
             {/* 摘要 (折叠) */}
