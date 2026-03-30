@@ -11,6 +11,29 @@
 
 ### 新增
 
+- `[后端]` 实施计划阶段 4 完成：Agent 实现
+  - ReviewState TypedDict (`agents/state.py`)：全部字段对齐 §4.2，含 HITL 信号、反馈环路控制、Token 预算追踪
+  - AgentRegistry (`agents/registry.py`)：全局单例注册中心，Agent 自注册模式
+  - parse_intent 节点 (`agents/intent_parser.py`)：LLM 解析用户意图 → search_strategy (queries + key_concepts + filters)，JSON 解析失败有 fallback
+  - Search Agent (`agents/search_agent.py`)：
+    - Multi-Source Fetcher：asyncio.gather 并行调用 SourceRegistry 所有已启用数据源
+    - Deduplicator：DOI → S2 ID → arXiv ID → title 四级去重，高引优先保留
+    - Snowball Crawler：S2 引用/被引链展开，深度 2、单次 50、总量 200 约束
+    - Ranker：keyword 相关性 × 0.5 + log(citations) × 0.3 + recency × 0.2
+  - Reader Agent (`agents/reader_agent.py`)：
+    - PDF Processor：httpx 下载 + PyMuPDF 解析，失败降级摘要模式
+    - Info Extractor：LLM 结构化提取 (objective/methodology/datasets/findings/limitations/key_concepts)
+    - 并行处理：asyncio.Semaphore(5) 并发读取，部分失败不阻塞
+    - fulltext_coverage 统计 (全文/仅摘要/失败)
+  - Writer Agent (`agents/writer_agent.py`)：
+    - generate_outline_node：LLM 生成大纲 (title + sections with relevant_paper_indices)
+    - write_review_node：逐章节 LLM 写作 + citation 标记 + 参考文献列表 (APA/IEEE/GB-T)
+    - revise_review_node：基于用户修改意见重写
+    - build_references_list：从 analyses 构建格式化引用
+  - verify_citations 节点 (`agents/verify_citations.py`)：回溯 S2 验证每条引用 (DOI + paper_id)，标记 verified/unverified
+  - export 节点 (`agents/export_node.py`)：生成最终 Markdown 输出
+  - 全部 8 个 Agent Node 自注册到 agent_registry (parse_intent / search / read / generate_outline / write_review / revise_review / verify_citations / export)
+  - 43 项新增单元测试 (mock LLM)，全部 139 项测试通过
 - `[后端]` 实施计划阶段 3 完成：能力层
   - LLM 抽象层 (`services/llm.py`)：LLMRouter 多模型路由 (agent×task_type → model)、ModelConfig、Token 用量追踪、失败自动降级 (gpt-4o → gpt-4o-mini)、tenacity 重试 (指数退避 ×3)
   - Prompt 管理 (`services/prompt_manager.py`)：Jinja2 模板加载器，支持变量渲染、热重载、A/B 测试 (PROMPTS_DIR 切换)
