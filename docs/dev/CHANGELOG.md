@@ -11,6 +11,14 @@
 
 ### 新增
 
+- `[设计]` v0.3 实施计划文档 (`docs/dev/v03-implementation-plan.md`)：Analyst Agent + Critic Agent 完整设计
+  - 混合分析策略 (Embedding 聚类 + LLM 语义解读)、LLM-Driven 质量评估 + Bibliometric 信号
+  - Analyst 输出结构设计：topic_clusters、comparison_matrix、timeline、citation_network、research_trends
+  - Critic 输出结构设计：quality_assessments (含 Rubric)、contradictions、research_gaps、limitation_summary
+  - 8 个 Prompt 模板设计 (analyst 4 + critic 4)、4 个新输出类型 Writer Prompt
+  - 反馈环路触发条件、论文数量阈值策略、Writer 引用权重策略
+  - 6 阶段实施分解、文件产出清单 (~25 新增 / ~8 修改)、依赖关系图
+  - Token 消耗预估 (~86K tokens for Analyst+Critic, 约增加 $0.20-0.25/次)
 - `[前端]` `[基础设施]` 前端实施计划阶段 6 完成：Docker 部署与构建优化
   - Dockerfile (`frontend/Dockerfile`)：多阶段构建 (node:20-alpine 构建 → nginx:1.27-alpine 生产)，healthcheck 配置
   - .dockerignore (`frontend/.dockerignore`)：排除 node_modules/dist/.git 等
