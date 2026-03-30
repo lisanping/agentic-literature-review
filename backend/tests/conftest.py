@@ -35,8 +35,10 @@ test_session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
 @pytest_asyncio.fixture
 async def db_session() -> AsyncGenerator[AsyncSession, None]:
     """Yield a test database session backed by in-memory SQLite."""
+    # Import all models so Base.metadata knows about every table
+    import app.models  # noqa: F401
+
     async with test_engine.begin() as conn:
-        # Import Base here to avoid circular imports at collection time
         from app.models.database import Base
 
         await conn.run_sync(Base.metadata.create_all)

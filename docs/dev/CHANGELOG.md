@@ -11,6 +11,32 @@
 
 ### 新增
 
+- `[后端]` 实施计划阶段 3 完成：能力层
+  - LLM 抽象层 (`services/llm.py`)：LLMRouter 多模型路由 (agent×task_type → model)、ModelConfig、Token 用量追踪、失败自动降级 (gpt-4o → gpt-4o-mini)、tenacity 重试 (指数退避 ×3)
+  - Prompt 管理 (`services/prompt_manager.py`)：Jinja2 模板加载器，支持变量渲染、热重载、A/B 测试 (PROMPTS_DIR 切换)
+  - 7 个 MVP 级 Prompt 模板：search/query_planning + relevance_ranking、reader/info_extraction + relation_detection、writer/outline + section_writing + coherence_review
+  - PaperSource 抽象接口 (`sources/base.py`)：search / get_paper / get_citations / get_references 四方法
+  - SourceRegistry (`sources/registry.py`)：注册/启用/禁用数据源，运行时动态查询
+  - Semantic Scholar 适配器 (`sources/semantic_scholar.py`)：Graph API v1 全字段映射，year 过滤，引用/参考链获取
+  - arXiv 适配器 (`sources/arxiv.py`)：Atom XML 解析，arXiv ID 版本号剥离，全字段映射
+  - RateLimiter (`sources/rate_limiter.py`)：异步令牌桶限速器 (S2: 100req/5min, arXiv: 3req/s)
+  - CachedSource (`sources/cache.py`)：Redis 缓存装饰器，TTL 24h，SHA-256 key 生成
+  - 数据源注册入口 (`sources/__init__.py`)：`create_source_registry()` 组装 S2 + arXiv（含缓存）
+  - PDF 解析器 (`parsers/pdf_parser.py`)：PyMuPDF 全文提取 + 基于字号/粗体的章节检测，解析失败降级
+  - 引用格式化 (`parsers/citation_formatter.py`)：APA / IEEE / GB/T 7714 格式化 + BibTeX/RIS 导入导出
+  - 导出服务 (`services/export.py`)：Markdown 全文输出 + python-docx Word 导出 + BibTeX/RIS 导出
+  - 事件发布 (`services/event_publisher.py`)：Redis Pub/Sub 异步事件发布 (Worker → Backend)
+  - 事件总线 (`services/event_bus.py`)：Redis Pub/Sub 订阅 + ReplayBuffer 断线重放
+  - 52 项新增单元测试，全部 96 项测试通过
+- `[后端]` 实施计划阶段 2 完成：数据层
+  - 5 个 ORM 模型 (Project / Paper+PaperFulltext / PaperAnalysis / ProjectPaper / ReviewOutput)，对齐数据模型设计文档所有字段和索引
+  - 所有项目级实体支持 `deleted_at` 软删除，条件唯一索引 `WHERE deleted_at IS NULL`
+  - Alembic 异步迁移环境 (async engine)，初始迁移脚本自动生成 6 张表 + 全部索引
+  - Pydantic Schema (ProjectCreate/Update/Response, PaperMetadata/Response, ReviewOutputResponse, PaginatedResponse)
+  - 论文去重服务 (`paper_ops.py`)：DOI → S2 ID → arXiv ID → 标题模糊匹配四级去重 + 元数据合并
+  - Chroma 向量库初始化 (`embedding.py`)：`paper_embeddings` collection，cosine 距离
+  - `deps.py` 使用 `database.py` 集中管理的引擎和会话工厂
+  - 34 项新增单元测试 (ORM CRUD 11 项 + 去重逻辑 11 项 + Schema 校验 8 项 + Chroma 初始化验证)，全部 44 项测试通过
 - `[后端]` 实施计划阶段 1 完成：项目脚手架与基础设施
   - 初始化 Python 项目，`requirements.txt` 锁定全部核心依赖版本
   - FastAPI 应用入口 (`app/main.py`)：CORS、全局异常处理器、lifespan 事件
