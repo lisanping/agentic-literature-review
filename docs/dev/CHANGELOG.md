@@ -11,6 +11,88 @@
 
 ### 新增
 
+- `[前端]` `[基础设施]` 前端实施计划阶段 6 完成：Docker 部署与构建优化
+  - Dockerfile (`frontend/Dockerfile`)：多阶段构建 (node:20-alpine 构建 → nginx:1.27-alpine 生产)，healthcheck 配置
+  - .dockerignore (`frontend/.dockerignore`)：排除 node_modules/dist/.git 等
+  - Nginx 配置 (`frontend/nginx.conf`)：
+    - SPA fallback (try_files → /index.html)
+    - API 反向代理 (/api/ → backend:8000)，30s/60s 超时，50MB 上传限制
+    - SSE 代理 (正则匹配 events 端点)：proxy_buffering off、proxy_cache off、3600s 读写超时
+    - 健康检查代理 (/healthz, /readyz)
+    - Gzip 压缩 (level 6, 最小 256B)
+    - 静态资源缓存 (/assets/ 1年 immutable)
+    - 安全头 (X-Frame-Options, X-Content-Type-Options, X-XSS-Protection, Referrer-Policy)
+  - docker-compose.yml 更新：新增 frontend 服务，端口 3000，depends_on backend (healthy)，healthcheck
+  - Vite 构建优化 (`vite.config.ts`)：
+    - manualChunks 代码分割：vendor (React 53KB) / antd (279KB) / markdown (48KB) / index (31KB)
+    - 生产构建总体积 gzip ~411KB (< 500KB 目标)
+- `[前端]` 前端实施计划阶段 5 完成：综述预览与导出
+  - ReviewPreview (`components/Review/ReviewPreview.tsx`)：react-markdown + remark-gfm 渲染综述内容，支持 GFM 表格/列表/blockquote，heading 自动生成 ID (供大纲导航跳转)，sup 元素自动关联引用验证 Badge
+  - OutlineTree (`components/Review/OutlineTree.tsx`)：Ant Design Tree 组件，从 outline JSON 生成树形导航，点击跳转到对应 heading (scrollIntoView)
+  - CitationBadge (`components/Review/CitationBadge.tsx`)：引用旁显示 ✅ 已验证 / ⚠️ 待确认 Tag + Tooltip (标题+DOI+状态)
+  - CitationSummary (`components/Review/CitationSummary.tsx`)：引用验证汇总 — 已验证 N 条 / 待确认 M 条
+  - ExportButton (`components/Review/ExportButton.tsx`)：Ant Design Dropdown 按钮，4 种格式 (Markdown/Word/BibTeX/RIS)，调用 exportOutput API → Blob 下载
+  - ProjectPage 重构：
+    - 工作流完成时左侧面板从对话流切换为 ReviewPreview 综述预览
+    - 右侧面板新增「综述」Tab：输出版本切换按钮 + OutlineTree 大纲导航 + CitationSummary 引用汇总
+    - 顶部工具栏：完成后显示 ExportButton 导出按钮替代原「查看结果」按钮
+    - 自动加载项目输出列表 (`listOutputs`)，默认展示最新版本
+- `[前端]` 前端实施计划阶段 4 完成：工作流核心交互
+  - Workflow Store (`stores/workflowStore.ts`)：Zustand 管理工作流运行时状态 — phase/status/messages/agentProgress/hitlState/candidatePapers/tokenUsage
+  - useSSE Hook (`hooks/useSSE.ts`)：管理 EventSource 生命周期，10 种 SSE 事件类型分发到 Store (agent_start/complete/progress/paper_found/paper_read/hitl_pause/token_update/warning/error/complete)
+  - useWorkflow Hook (`hooks/useWorkflow.ts`)：封装 start/resume/cancel 工作流操作，自动管理 SSE 连接生命周期
+  - ProjectPage (`pages/ProjectPage.tsx`)：双栏布局 — 左侧对话流 + 右侧数据面板 (Tabs: 论文列表/Token)，项目加载 + 自动恢复 SSE + 工作流控制按钮 (启动/取消)
+  - ChatPanel (`components/Chat/ChatPanel.tsx`)：消息列表 + 输入框，自动滚动到最新，HITL 暂停时禁用输入并显示 HitlCard
+  - MessageBubble (`components/Chat/MessageBubble.tsx`)：区分 system/user/agent 消息类型、警告/错误样式、Agent 消息可折叠 (Collapse)
+  - AgentStatus (`components/Workflow/AgentStatus.tsx`)：当前 Agent 名称 + 状态 Tag (processing/warning/success) + 进度数字
+  - ProgressBar (`components/Workflow/ProgressBar.tsx`)：四步骤进度 (检索→精读→写作→导出)，phase 映射到 Steps current
+  - HitlCard (`components/Workflow/HitlCard.tsx`)：三种 HITL 交互卡片 —
+    - 检索确认：可勾选论文列表 (PaperList selectable) + 过滤器 + 成本预估 + 追加搜索词 + 确认按钮
+    - 大纲审阅：Tree 组件展示大纲结构 + 修改意见输入 + 确认/重新生成按钮
+    - 初稿审阅：综述预览 + 修改意见输入 + 通过/要求修改按钮
+  - PaperCard (`components/Paper/PaperCard.tsx`)：标题/作者/年份/会议/被引数/全文状态(📄/📋)/相关度圆点/摘要折叠
+  - PaperFilter (`components/Paper/PaperFilter.tsx`)：年份范围 Select + 最低被引 InputNumber + 仅全文 Switch
+  - PaperList (`components/Paper/PaperList.tsx`)：可勾选论文列表 + 过滤 + 全选/取消全选 + 已选统计
+  - TokenUsage (`components/Workflow/TokenUsage.tsx`)：已消耗/预算/费用 + 进度条 + 超限警告
+  - CostEstimate (`components/Workflow/CostEstimate.tsx`)：HITL 确认前显示预估 Token 消耗和费用
+  - EmptyState (`components/Common/EmptyState.tsx`)：数据源异常/空结果/预算超限/通用错误 4 种状态 + 重试/修改按钮
+  - App.tsx 更新：项目工作区路由替换为 ProjectPage 组件，移除占位页面
+- `[前端]` 前端实施计划阶段 3 完成：项目管理
+  - Project Store (`stores/projectStore.ts`)：Zustand 管理项目列表、当前项目、CRUD actions (add/remove/update)
+  - useProjects Hook (`hooks/useProjects.ts`)：封装项目 CRUD API 调用 + Store 同步 (fetchProjects/createProject/deleteProject/fetchProject)
+  - HomePage (`pages/HomePage.tsx`)：
+    - 研究问题输入 (TextArea, 2000 字符限制, showCount)
+    - 输出类型选择 (Radio.Group: 快速摘要/注释文献列表/完整综述)
+    - 文件上传 (Ant Design Upload: PDF/.bib/.ris, 多文件, 拖拽)
+    - 最近项目列表 (List: 状态 Badge + 论文数 + 相对时间 + 删除按钮)
+    - 中断恢复提示 (Alert: 检测到进行中项目，一键跳转恢复)
+    - 创建项目后自动跳转到项目工作区
+  - Sidebar 对接 API：首次挂载时调用 `onRefresh` 加载项目列表
+  - AppLayout 重构：从 props 传入改为直接使用 useProjects Hook，移除 `projects` prop
+  - App.tsx 更新：首页路由替换为 HomePage 组件
+- `[前端]` 前端实施计划阶段 2 完成：布局与路由
+  - AppLayout 布局组件 (`components/Layout/AppLayout.tsx`)：Ant Design Layout Sider + Content + Footer 三段式布局，侧栏可折叠 (breakpoint lg 响应式)，Outlet 嵌套路由
+  - Sidebar 侧栏 (`components/Layout/Sidebar.tsx`)：Logo + 新建项目按钮 + 项目列表 (Menu)，项目状态 Badge 标识 (processing/warning/success/error)，URL 匹配高亮
+  - StatusBar 状态栏 (`components/Layout/StatusBar.tsx`)：Agent 进度 Tag (名称+进度) + Token 消耗/预算/费用显示，工作流非活跃时自动隐藏
+  - ErrorBoundary (`components/Common/ErrorBoundary.tsx`)：React 类组件错误边界，捕获渲染异常显示 Ant Design Result 错误页 + 重试按钮
+  - Loading 组件 (`components/Common/Loading.tsx`)：支持 Skeleton 骨架屏和 Spin 旋转两种加载态
+  - NotFoundPage (`pages/NotFoundPage.tsx`)：Ant Design Result 404 页面 + 返回首页按钮
+  - UI Store (`stores/uiStore.ts`)：Zustand 管理侧栏折叠状态
+  - App.tsx 路由重构：ErrorBoundary 包裹 + AppLayout 嵌套路由 (`/` 首页、`/projects/:id` 工作区、`*` 404)
+- `[前端]` 前端实施计划阶段 1 完成：项目脚手架与基础设施
+  - Vite + React 18 + TypeScript 项目初始化 (`frontend/`)
+  - 依赖安装：antd 5、react-router-dom 6、zustand 5、axios、react-markdown、dayjs 等
+  - ESLint 9 + Prettier 代码规范配置
+  - Ant Design 主题配置 (ConfigProvider + 中文语言包)
+  - TypeScript 类型定义 (`types/`)：对齐后端全部枚举 (OutputType/ProjectStatus/CitationStyle 等) 和 Pydantic Schema (Project/Paper/Workflow/Output 6 组类型)
+  - API 客户端 (`api/client.ts`)：Axios 实例 + 响应拦截器统一错误处理 (404/409/422/503)
+  - SSE 客户端 (`api/sse.ts`)：EventSource 封装，自动重连 (指数退避)、Last-Event-ID 续传、10 种事件类型监听、complete/error 自动关闭
+  - API 接口定义 (`api/`)：projects (5 端点) / workflow (4 端点 + SSE URL) / papers (4 端点) / outputs (3 端点 + 文件下载)
+  - Vite 开发代理配置：`/api`、`/healthz`、`/readyz` 代理到后端 localhost:8000
+  - 工具函数 (`utils/`)：日期/Token/费用格式化、状态标签/颜色映射、MVP 常量
+  - 路由占位 (App.tsx)：`/` 首页、`/projects/:projectId` 项目工作区、`*` 404
+  - 生产构建验证通过：gzip 后 JS 总体积 ~84KB (vendor 52KB + antd 28KB + app 5KB)
+  - `.env.example`、`.prettierrc`、`eslint.config.js`、`tsconfig.json` 配置完善
 - `[文档]` 新增前端 MVP v0.2 实施计划 (`docs/dev/frontend-implementation-plan.md`)
   - 基于 UX 设计文档 §9.2 和已完成的后端 API (16 端点 + SSE)，将前端开发分解为 6 个实施阶段
   - 阶段 1 项目脚手架 → 阶段 2 布局与路由 → 阶段 3 项目管理 → 阶段 4 工作流核心交互 → 阶段 5 综述预览与导出 → 阶段 6 集成测试与 Docker 部署
