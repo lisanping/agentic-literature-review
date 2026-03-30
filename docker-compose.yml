@@ -1,0 +1,73 @@
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o}
+      - DATABASE_URL=sqlite+aiosqlite:///data/app.db
+      - CHROMA_PATH=/data/chroma
+      - REDIS_URL=redis://redis:6379/0
+      - CHECKPOINT_DB_URL=sqlite:///data/checkpoints.db
+      - CHECKPOINTER_BACKEND=sqlite
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - S2_API_KEY=${S2_API_KEY:-}
+      - PROMPTS_DIR=prompts
+    volumes:
+      - app-data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    stop_grace_period: 30s
+
+  worker:
+    build: ./backend
+    command: >
+      celery -A app.tasks worker -l info
+      -Q high,default,low
+      --max-tasks-per-child=100
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o}
+      - DATABASE_URL=sqlite+aiosqlite:///data/app.db
+      - CHROMA_PATH=/data/chroma
+      - REDIS_URL=redis://redis:6379/0
+      - CHECKPOINT_DB_URL=sqlite:///data/checkpoints.db
+      - CHECKPOINTER_BACKEND=sqlite
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - S2_API_KEY=${S2_API_KEY:-}
+      - PROMPTS_DIR=prompts
+    volumes:
+      - app-data:/data
+    depends_on:
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "celery", "-A", "app.tasks", "inspect", "ping", "-t", "5"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    stop_grace_period: 60s
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  app-data:

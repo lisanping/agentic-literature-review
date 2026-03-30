@@ -1,6 +1,6 @@
 # 多智能体文献综述应用 — 系统架构详细设计
 
-> **文档版本**: v1.2
+> **文档版本**: v1.3
 > **创建日期**: 2026-03-28
 > **最后更新**: 2026-03-30
 > **文档状态**: 迭代修订
@@ -39,7 +39,7 @@
                     │   用户       │
                     │ (浏览器/CLI) │
                     └──────┬──────┘
-                           │ HTTPS / WebSocket
+                           │ HTTPS / SSE
                            ▼
               ┌────────────────────────┐
               │     API Gateway        │
@@ -85,10 +85,10 @@
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    表现层 (Presentation)                     │
-│    React SPA · WebSocket 实时推送 · CLI Client              │
+│    React SPA · SSE 实时推送 · CLI Client                  │
 ├─────────────────────────────────────────────────────────────┤
 │                    接口层 (API Layer)                        │
-│    FastAPI · REST + WebSocket · 认证鉴权 · 请求校验         │
+│    FastAPI · REST + SSE · 认证鉴权 · 请求校验              │
 ├─────────────────────────────────────────────────────────────┤
 │                    编排层 (Orchestration)                    │
 │    LangGraph StateMachine · Workflow DAG · Human-in-loop    │
@@ -112,7 +112,7 @@
 | 层次       | 职责                                        | MVP 技术选型            |
 | ---------- | ------------------------------------------- | ----------------------- |
 | 表现层     | 用户交互、实时状态展示                      | React + Ant Design      |
-| 接口层     | 请求路由、认证、参数校验、SSE/WS 推送       | FastAPI                 |
+| 接口层     | 请求路由、认证、参数校验、SSE 实时推送      | FastAPI                 |
 | 编排层     | 工作流定义、Agent 调度、断点恢复、HITL 控制 | LangGraph               |
 | 智能体层   | 各专业 Agent 的业务逻辑                     | LangGraph Nodes         |
 | 能力层     | 底层工具函数，供 Agent 调用                 | Python 模块             |
@@ -367,6 +367,17 @@ class ReviewState(TypedDict):
     messages: Annotated[list, add_messages] # 对话历史
     error_log: list[dict]                   # 错误记录
 ```
+
+> **State 体积管理约束**: `ReviewState` 经 LangGraph Checkpointer 在每个 Node 执行后序列化到 SQLite/PostgreSQL。当论文数量较多时（100+），`candidate_papers`、`paper_analyses`、`full_draft` 等字段可能导致 State 达数 MB 级别，影响 checkpoint 写入性能。实现时应采用以下策略控制体积：
+>
+> | 字段 | 策略 | 说明 |
+> |--------|--------|------|
+> | `candidate_papers` / `selected_papers` | State 内仅存储 `paper_id` 列表 | 完整 `PaperMetadata` 已写入业务数据库 `papers` 表，Agent 按需查询 |
+> | `paper_analyses` | State 内仅存储 `paper_id` 列表 | 完整分析结果已写入 `paper_analyses` 表，Writer Agent 按需加载 |
+> | `full_draft` | State 内存储草稿摘要或引用 ID | 完整文本写入 `review_outputs` 表，避免长文本反复序列化 |
+> | `messages` | 控制最大历史长度 | 仅保留最近 N 条消息，避免无限增长 |
+>
+> 具体实现时，上述“简化视图”字段（如 `candidate_papers: list[str]`）可替代当前的完整对象列表，但需确保 Agent 内部有便捷的数据库查询接口。本 TypedDict 保留完整对象以展示数据合约，实际编码时可按上表策略优化。
 
 ### 4.3 条件路由逻辑
 
@@ -804,39 +815,114 @@ class AgentEvent(TypedDict):
 
 ### 6.4 SSE 背压与消息缓冲
 
-当 Reader Agent 并行精读多篇论文时，事件产出速率可能超过前端消费速率，导致 SSE 连接缓冲溢出或内存膨胀。系统通过 **有界缓冲 + 消息合并 + 断线重连** 三层机制应对。
+当 Reader Agent 并行精读多篇论文时，事件产出速率可能超过前端消费速率，导致 SSE 连接缓冲溢出或内存膨胀。系统通过 **跨进程事件通道 + 有界缓冲 + 消息合并 + 断线重连** 四层机制应对。
 
-**EventBus 有界缓冲**:
+#### 6.4.1 跨进程事件通道：Redis Pub/Sub
+
+> **架构约束**: Docker Compose 中 `backend`（FastAPI）和 `worker`（Celery）是独立容器/进程，不共享内存。Agent 执行产生的事件在 Worker 进程中，而 SSE 端点在 Backend 进程中。因此不能使用进程内内存队列（如 `asyncio.Queue`）作为事件总线，必须使用 **Redis Pub/Sub** 作为跨进程事件通道。
+
+**事件流转示意图**:
+
+```
+[Celery Worker]                    [Redis]                    [FastAPI Backend]
+     │                               │                              │
+  Agent 执行产生事件              │                              │
+     │                               │                              │
+     │── PUBLISH                    │                              │
+     │   events:{project_id} ───▶│                              │
+     │                               │── fan-out ──────────────▶│
+     │                               │                     SUBSCRIBE │
+     │                               │                   events:{id} │
+     │                               │                              │
+     │                               │                         SSE 推送到前端
+```
+
+**Worker 端发布事件**:
 
 ```python
-import asyncio
-from collections import defaultdict
+import redis.asyncio as aioredis
+import json
 
-class EventBus:
-    """项目级事件总线，带有界缓冲和背压控制"""
+class EventPublisher:
+    """在 Celery Worker 中发布事件到 Redis"""
 
-    def __init__(self, max_buffer_size: int = 500):
-        self._channels: dict[str, asyncio.Queue] = defaultdict(
-            lambda: asyncio.Queue(maxsize=max_buffer_size)
-        )
+    def __init__(self, redis_url: str):
+        self._redis = aioredis.from_url(redis_url)
 
     async def publish(self, project_id: str, event: AgentEvent):
-        """发布事件到项目频道。缓冲满时丢弃最旧事件并记录警告"""
-        queue = self._channels[project_id]
-        if queue.full():
-            dropped = queue.get_nowait()  # 丢弃最旧事件
-            logger.warning("sse.event_dropped", project_id=project_id,
-                           dropped_type=dropped["event_type"])
-        await queue.put(event)
+        """发布事件到 Redis Pub/Sub 频道"""
+        channel = f"events:{project_id}"
+        await self._redis.publish(channel, json.dumps(event))
+
+    def publish_sync(self, project_id: str, event: AgentEvent):
+        """同步版发布，供 Celery 任务中调用"""
+        r = redis.from_url(self._redis_url)
+        channel = f"events:{project_id}"
+        r.publish(channel, json.dumps(event))
+```
+
+**Backend 端订阅与转发**:
+
+```python
+class EventBus:
+    """项目级事件总线，基于 Redis Pub/Sub 实现跨进程事件通道"""
+
+    def __init__(self, redis_url: str, max_buffer_size: int = 500):
+        self._redis = aioredis.from_url(redis_url)
+        self._max_buffer_size = max_buffer_size
 
     async def subscribe(self, project_id: str):
-        """SSE 端点消费事件的异步生成器"""
-        queue = self._channels[project_id]
-        while True:
-            event = await queue.get()
-            yield event
-            if event["event_type"] == "complete":
-                break
+        """SSE 端点消费事件的异步生成器，从 Redis 订阅事件"""
+        pubsub = self._redis.pubsub()
+        channel = f"events:{project_id}"
+        await pubsub.subscribe(channel)
+        try:
+            async for message in pubsub.listen():
+                if message["type"] != "message":
+                    continue
+                event = json.loads(message["data"])
+                yield event
+                if event["event_type"] == "complete":
+                    break
+        finally:
+            await pubsub.unsubscribe(channel)
+            await pubsub.close()
+```
+
+| 组件             | 职责                         | 依赖  |
+| ---------------- | ---------------------------- | ----- |
+| `EventPublisher` | Worker 端发布事件到 Redis    | Redis |
+| `EventBus`       | Backend 端订阅事件并转发 SSE | Redis |
+
+> **为何不用 Redis Stream**: Redis Pub/Sub 是即发即弃模式，足够满足实时事件推送场景。Redis Stream 支持持久化和消费组，但引入额外复杂度。当前事件仅用于 UI 实时展示，不需要持久化，丢失事件可通过断线重连重放机制补对。MVP 阶段使用 Pub/Sub，如后续需求升级可替换为 Stream。
+
+#### 6.4.2 本地有界缓冲
+
+Backend 端在 Redis 订阅与 SSE 推送之间保持一个本地有界缓冲，用于断线重放和背压控制：
+
+```python
+from collections import deque
+
+class ReplayBuffer:
+    """最近事件缓冲，支持断线重连重放"""
+
+    def __init__(self, max_size: int = 100):
+        self._buffer: dict[str, deque] = defaultdict(lambda: deque(maxlen=max_size))
+
+    def append(self, project_id: str, event: AgentEvent):
+        self._buffer[project_id].append(event)
+
+    def replay_since(self, project_id: str, last_event_id: str) -> list[AgentEvent]:
+        """Return events after the given event ID"""
+        events = self._buffer.get(project_id, deque())
+        result = []
+        found = False
+        for e in events:
+            if found:
+                result.append(e)
+            elif e.get("event_id") == last_event_id:
+                found = True
+        return result
 ```
 
 **消息合并（Debounce）**: 高频 `progress` 事件（如 Reader 每秒完成多篇论文）在推送前合并，降低前端渲染压力：
@@ -852,16 +938,18 @@ class EventBus:
 
 ```python
 # api/routes/events.py
-@router.get("/projects/{project_id}/events")
+@router.get("/api/v1/projects/{project_id}/events")
 async def sse_stream(project_id: str, last_event_id: str | None = Header(None)):
     async def event_generator():
-        # 若客户端断线重连，从缓冲中重放丢失事件
+        # 若客户端断线重连，从本地 ReplayBuffer 重放丢失事件
         if last_event_id:
-            missed = event_bus.replay_since(project_id, last_event_id)
+            missed = replay_buffer.replay_since(project_id, last_event_id)
             for event in missed:
                 yield format_sse(event)
 
+        # 订阅 Redis Pub/Sub，接收 Worker 推送的事件
         async for event in event_bus.subscribe(project_id):
+            replay_buffer.append(project_id, event)  # 存入重放缓冲
             yield format_sse(event)
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
@@ -869,11 +957,10 @@ async def sse_stream(project_id: str, last_event_id: str | None = Header(None)):
 
 **设计约束**:
 
-| 参数                   | 默认值 | 说明                                       |
-| ---------------------- | ------ | ------------------------------------------ |
-| `max_buffer_size`      | 500    | 每个项目的事件队列上限，超出时丢弃最旧事件 |
-| `progress_debounce_ms` | 500    | progress 事件合并窗口                      |
-| `replay_buffer_size`   | 100    | 断线重连时最多重放的历史事件数             |
+| 参数                   | 默认值 | 说明                                             |
+| ---------------------- | ------ | ------------------------------------------------ |
+| `progress_debounce_ms` | 500    | progress 事件合并窗口                            |
+| `replay_buffer_size`   | 100    | 本地 ReplayBuffer 容量，断线重连时最多重放的事件 |
 
 ---
 
@@ -1122,26 +1209,40 @@ ORM 模型中避免使用 SQLite 特有语法，确保与 PostgreSQL 兼容：
 
 ### 8.3 接口层 REST API 设计
 
-后端 FastAPI 暴露以下 REST API，供前端 / CLI / 第三方集成调用。MVP 阶段实现标注 ✅ 的接口。
+后端 FastAPI 暴露以下 REST API，供前端 / CLI / 第三方集成调用。所有业务 API 统一使用 `/api/v1/` 前缀，为后续破坏性变更预留版本切换空间。MVP 阶段实现标注 ✅ 的接口。
 
 #### 8.3.1 项目管理
 
-| 方法   | 路径                 | 说明         | MVP | 请求体 / 参数                       | 响应                    |
-| ------ | -------------------- | ------------ | --- | ----------------------------------- | ----------------------- |
-| POST   | `/api/projects`      | 创建综述项目 | ✅   | `ProjectCreate` (见数据模型 §3.2)   | `ProjectResponse`       |
-| GET    | `/api/projects`      | 列出所有项目 | ✅   | `?status=` `?page=` `?size=`        | `list[ProjectResponse]` |
-| GET    | `/api/projects/{id}` | 获取项目详情 | ✅   |                                     | `ProjectResponse`       |
-| DELETE | `/api/projects/{id}` | 软删除项目   | ✅   |                                     | `204 No Content`        |
-| PATCH  | `/api/projects/{id}` | 更新项目配置 | ✅   | `{token_budget, output_types, ...}` | `ProjectResponse`       |
+| 方法   | 路径                    | 说明         | MVP | 请求体 / 参数                       | 响应                                 |
+| ------ | ----------------------- | ------------ | --- | ----------------------------------- | ------------------------------------ |
+| POST   | `/api/v1/projects`      | 创建综述项目 | ✅   | `ProjectCreate` (见数据模型 §3.2)   | `ProjectResponse`                    |
+| GET    | `/api/v1/projects`      | 列出所有项目 | ✅   | `?status=` `?page=` `?size=`        | `PaginatedResponse[ProjectResponse]` |
+| GET    | `/api/v1/projects/{id}` | 获取项目详情 | ✅   |                                     | `ProjectResponse`                    |
+| DELETE | `/api/v1/projects/{id}` | 软删除项目   | ✅   |                                     | `204 No Content`                     |
+| PATCH  | `/api/v1/projects/{id}` | 更新项目配置 | ✅   | `{token_budget, output_types, ...}` | `ProjectResponse`                    |
+
+**分页响应格式**:
+
+所有返回列表的 API 使用统一的分页包装：
+
+```python
+class PaginatedResponse(BaseModel, Generic[T]):
+    """统一分页响应格式"""
+    items: list[T]          # 当前页数据
+    total: int              # 总记录数
+    page: int               # 当前页码 (1-based)
+    size: int               # 每页条数
+    pages: int              # 总页数
+```
 
 #### 8.3.2 工作流控制
 
-| 方法 | 路径                                 | 说明                        | MVP | 请求体 / 参数           | 响应                     |
-| ---- | ------------------------------------ | --------------------------- | --- | ----------------------- | ------------------------ |
-| POST | `/api/projects/{id}/workflow/start`  | 启动工作流                  | ✅   | `{}`                    | `{task_id, status}`      |
-| POST | `/api/projects/{id}/workflow/resume` | 从 HITL 断点恢复 (提交反馈) | ✅   | `HitlFeedback` (见下方) | `{task_id, status}`      |
-| GET  | `/api/projects/{id}/workflow/status` | 查询工作流当前状态          | ✅   |                         | `{phase, progress, ...}` |
-| POST | `/api/projects/{id}/workflow/cancel` | 取消工作流                  | ✅   |                         | `204 No Content`         |
+| 方法 | 路径                                    | 说明                        | MVP | 请求体 / 参数           | 响应                     |
+| ---- | --------------------------------------- | --------------------------- | --- | ----------------------- | ------------------------ |
+| POST | `/api/v1/projects/{id}/workflow/start`  | 启动工作流                  | ✅   | `{}`                    | `{task_id, status}`      |
+| POST | `/api/v1/projects/{id}/workflow/resume` | 从 HITL 断点恢复 (提交反馈) | ✅   | `HitlFeedback` (见下方) | `{task_id, status}`      |
+| GET  | `/api/v1/projects/{id}/workflow/status` | 查询工作流当前状态          | ✅   |                         | `{phase, progress, ...}` |
+| POST | `/api/v1/projects/{id}/workflow/cancel` | 取消工作流                  | ✅   |                         | `204 No Content`         |
 
 **HitlFeedback 请求体**:
 
@@ -1161,26 +1262,26 @@ class HitlFeedback(BaseModel):
 
 #### 8.3.3 论文管理
 
-| 方法  | 路径                                   | 说明                     | MVP | 请求体 / 参数                           | 响应                         |
-| ----- | -------------------------------------- | ------------------------ | --- | --------------------------------------- | ---------------------------- |
-| GET   | `/api/projects/{id}/papers`            | 获取项目论文列表         | ✅   | `?status=candidate\|selected\|excluded` | `list[ProjectPaperResponse]` |
-| PATCH | `/api/projects/{id}/papers/{paper_id}` | 更新论文状态 (选中/排除) | ✅   | `{status: "selected"\|"excluded"}`      | `ProjectPaperResponse`       |
-| GET   | `/api/papers/{id}`                     | 获取论文详情 (含分析)    | ✅   |                                         | `PaperResponse`              |
-| POST  | `/api/projects/{id}/papers/upload`     | 上传 PDF / BibTeX / RIS  | ✅   | `multipart/form-data`                   | `list[PaperResponse]`        |
+| 方法  | 路径                                      | 说明                     | MVP | 请求体 / 参数                           | 响应                                      |
+| ----- | ----------------------------------------- | ------------------------ | --- | --------------------------------------- | ----------------------------------------- |
+| GET   | `/api/v1/projects/{id}/papers`            | 获取项目论文列表         | ✅   | `?status=candidate\|selected\|excluded` | `PaginatedResponse[ProjectPaperResponse]` |
+| PATCH | `/api/v1/projects/{id}/papers/{paper_id}` | 更新论文状态 (选中/排除) | ✅   | `{status: "selected"\|"excluded"}`      | `ProjectPaperResponse`                    |
+| GET   | `/api/v1/papers/{id}`                     | 获取论文详情 (含分析)    | ✅   |                                         | `PaperResponse`                           |
+| POST  | `/api/v1/projects/{id}/papers/upload`     | 上传 PDF / BibTeX / RIS  | ✅   | `multipart/form-data`                   | `list[PaperResponse]`                     |
 
 #### 8.3.4 输出与导出
 
-| 方法 | 路径                                            | 说明             | MVP | 请求体 / 参数                       | 响应                                |
-| ---- | ----------------------------------------------- | ---------------- | --- | ----------------------------------- | ----------------------------------- |
-| GET  | `/api/projects/{id}/outputs`                    | 获取项目所有输出 | ✅   | `?type=full_review`                 | `list[ReviewOutputResponse]`        |
-| GET  | `/api/projects/{id}/outputs/{output_id}`        | 获取单个输出详情 | ✅   |                                     | `ReviewOutputResponse`              |
-| POST | `/api/projects/{id}/outputs/{output_id}/export` | 导出为指定格式   | ✅   | `{format: "markdown"\|"word"\|...}` | 文件流 (`application/octet-stream`) |
+| 方法 | 路径                                               | 说明             | MVP | 请求体 / 参数                       | 响应                                |
+| ---- | -------------------------------------------------- | ---------------- | --- | ----------------------------------- | ----------------------------------- |
+| GET  | `/api/v1/projects/{id}/outputs`                    | 获取项目所有输出 | ✅   | `?type=full_review`                 | `list[ReviewOutputResponse]`        |
+| GET  | `/api/v1/projects/{id}/outputs/{output_id}`        | 获取单个输出详情 | ✅   |                                     | `ReviewOutputResponse`              |
+| POST | `/api/v1/projects/{id}/outputs/{output_id}/export` | 导出为指定格式   | ✅   | `{format: "markdown"\|"word"\|...}` | 文件流 (`application/octet-stream`) |
 
 #### 8.3.5 事件流
 
-| 方法 | 路径                        | 说明                  | MVP | 参数                   | 响应                |
-| ---- | --------------------------- | --------------------- | --- | ---------------------- | ------------------- |
-| GET  | `/api/projects/{id}/events` | SSE 事件流 (实时进度) | ✅   | `Last-Event-ID` header | `text/event-stream` |
+| 方法 | 路径                           | 说明                  | MVP | 参数                   | 响应                |
+| ---- | ------------------------------ | --------------------- | --- | ---------------------- | ------------------- |
+| GET  | `/api/v1/projects/{id}/events` | SSE 事件流 (实时进度) | ✅   | `Last-Event-ID` header | `text/event-stream` |
 
 SSE 事件格式见 §6.3 `AgentEvent` 定义，背压与断线重连机制见 §6.4。
 
@@ -1412,7 +1513,13 @@ LangGraph 工作流在 HITL 节点使用 `interrupt` 暂停执行。若在 Celer
 | Celery + `gevent`/`eventlet` | 使用协程 Worker Pool                                           | ❌ 与 asyncio 生态不兼容 |
 | 独立 asyncio Worker          | 不使用 Celery，自建 asyncio 消费者                             | ❌ 增加架构复杂度        |
 
-MVP 采用 **`asyncio.run()` 桥接**模式：Celery 任务函数保持同步签名（prefork pool），在任务函数内部通过 `asyncio.run()` 驱动异步工作流。LangGraph 的 `graph.stream()` 本身为同步 API，其内部调用的 Agent Node 若需 async 操作（如并行 LLM 调用、并行数据源检索），由 Node 内部自行 `asyncio.run()` 或使用 `asyncio.get_event_loop().run_until_complete()`。此模式无需引入额外依赖，且与 Celery prefork 模型完全兼容。
+MVP 采用 **`asyncio.run()` 桥接**模式：Celery 任务函数保持同步签名（prefork pool），在任务函数入口通过 `asyncio.run()` 创建新的事件循环驱动异步工作流。LangGraph 的 `graph.stream()` 本身为同步 API，其内部调用的 Agent Node 若需 async 操作（如并行 LLM 调用、并行数据源检索），由 Node 内部自行处理。此模式无需引入额外依赖，且与 Celery prefork 模型完全兼容。
+
+> **嵌套事件循环风险与应对**: `asyncio.run()` 会创建新的事件循环，若当前线程已有运行中的事件循环（如 LangGraph 内部创建），嵌套调用会触发 `RuntimeError: This event loop is already running`。应对策略：
+>
+> 1. **Celery 任务入口统一管理事件循环**: 任务函数入口调用 `asyncio.run(main_async())` 创建唯一事件循环，所有 Agent Node 内部使用 `await` 而非 `asyncio.run()`
+> 2. **LangGraph 异步模式**: 使用 `graph.ainvoke()` / `graph.astream()` 异步 API 替代 `graph.stream()` 同步 API，使整个工作流在同一事件循环内运行
+> 3. **推荐方案**: 结合两者，Celery 任务入口用 `asyncio.run()` 启动循环，内部使用 `graph.astream()` 异步流式执行，Agent Node 定义为 `async def` 异步函数，避免任何嵌套事件循环
 
 ```python
 # tasks.py
@@ -1425,24 +1532,25 @@ app = Celery("literature_review")
 def run_review_segment(self, project_id: str, config: dict, resume: bool = False):
     """
     执行工作流的一个段落（两个 interrupt 之间的部分）。
-    Celery 任务为同步函数，内部 Agent 通过 asyncio.run() 桥接异步操作。
-
-    - 首次启动: resume=False, 从初始状态开始
-    - HITL 恢复: resume=True, 从最近 checkpoint 恢复
+    Celery 任务为同步函数，入口 asyncio.run() 启动事件循环，
+    内部使用 graph.astream() 异步执行工作流，避免嵌套事件循环。
     """
+    asyncio.run(self._run_async(project_id, config, resume))
+
+async def _run_async(self, project_id: str, config: dict, resume: bool):
     try:
         graph = build_review_graph()  # 含 checkpointer
+        event_publisher = EventPublisher(settings.REDIS_URL)
 
         if resume:
-            # 从 checkpoint 恢复，注入用户的 HITL 反馈
-            for event in graph.stream(None, thread_id=project_id):
-                publish_event(project_id, event)
+            async for event in graph.astream(None, thread_id=project_id):
+                await event_publisher.publish(project_id, event)
         else:
             initial_state = build_initial_state(config)
-            for event in graph.stream(initial_state, thread_id=project_id):
-                publish_event(project_id, event)
+            async for event in graph.astream(initial_state, thread_id=project_id):
+                await event_publisher.publish(project_id, event)
 
-        # graph.stream() 在 interrupt 时自动 checkpoint 并返回
+        # graph.astream() 在 interrupt 时自动 checkpoint 并返回
         # Celery 任务自然结束，不占用 Worker 线程
 
     except Exception as exc:

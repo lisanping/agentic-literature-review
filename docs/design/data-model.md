@@ -1,6 +1,6 @@
 # 多智能体文献综述应用 — 数据模型设计
 
-> **文档版本**: v1.2
+> **文档版本**: v1.3
 > **创建日期**: 2026-03-28
 > **最后更新**: 2026-03-30
 > **文档状态**: 迭代修订
@@ -756,10 +756,13 @@ CREATE TABLE project_papers (
 
     -- 时间戳
     added_at        TEXT NOT NULL DEFAULT (datetime('now')),
-    deleted_at      TEXT,                       -- 软删除 (随项目级联)
-
-    UNIQUE(project_id, paper_id)
+    deleted_at      TEXT                        -- 软删除 (随项目级联)
 );
+
+-- 部分唯一索引：仅对未软删除的记录生效，避免软删除后无法重新关联同一论文
+CREATE UNIQUE INDEX idx_pp_unique_active
+    ON project_papers(project_id, paper_id)
+    WHERE deleted_at IS NULL;
 
 CREATE INDEX idx_pp_project ON project_papers(project_id) WHERE deleted_at IS NULL;
 CREATE INDEX idx_pp_paper ON project_papers(paper_id) WHERE deleted_at IS NULL;

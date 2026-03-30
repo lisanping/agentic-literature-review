@@ -9,8 +9,34 @@
 
 ## [Unreleased]
 
+### 新增
+
+- `[后端]` 实施计划阶段 1 完成：项目脚手架与基础设施
+  - 初始化 Python 项目，`requirements.txt` 锁定全部核心依赖版本
+  - FastAPI 应用入口 (`app/main.py`)：CORS、全局异常处理器、lifespan 事件
+  - 配置管理 (`app/config.py`)：Pydantic Settings，11 项环境变量从 `.env` 加载
+  - 结构化日志 (`app/logging.py`)：structlog JSON 格式，按环境控制级别
+  - 健康检查端点 (`app/api/routes/health.py`)：`/healthz` 存活 + `/readyz` 就绪 (DB + Redis)
+  - 依赖注入 (`app/api/deps.py`)：异步 DB session 生成器 + Redis 客户端
+  - 枚举类型 (`app/models/enums.py`)：6 个 StrEnum (OutputType / ProjectStatus / PaperSourceType / PaperRelationType / CitationStyle / ExportFormat)
+  - SQLAlchemy Base 声明 (`app/models/database.py`)
+  - `.env.example`、`.gitignore`
+  - Backend Dockerfile (多阶段构建)、`docker-compose.yml` 骨架 (backend + worker + redis)
+  - pytest 测试基础设施 (`conftest.py`：async client / in-memory DB / mock Redis) + 10 项单元测试全部通过
+- `[文档]` 新增 MVP v0.1 实施计划 (`docs/dev/implementation-plan.md`)
+  - 基于四份设计文档，将 MVP 分解为 7 个实施阶段：项目脚手架 → 数据层 → 能力层 → Agent 实现 → 编排层 → 接口层 → 集成部署
+  - 每个阶段含详细任务清单、输出文件、验收标准
+  - 明确阶段间依赖关系（阶段 2/3 可并行，阶段 4 依赖 2+3）
+  - 包含完整文件产出清单（约 60 个文件）、技术风险分析、后续迭代规划 (v0.2~v1.0)
+
 ### 修复
 
+- `[设计]` P0 级架构缺陷修复（系统架构文档 + 数据模型文档）
+  - **跨进程事件通信**: 系统架构 §6.4 `EventBus` 从进程内 `asyncio.Queue` 重构为 **Redis Pub/Sub** 跨进程事件通道。新增 `EventPublisher`（Worker 端发布）和 `EventBus`（Backend 端订阅）双组件设计，以及 `ReplayBuffer` 本地重放缓冲。解决 Docker Compose 中 Worker 与 Backend 独立容器无法通过内存队列通信的断链问题
+  - **project_papers UNIQUE 约束与软删除冲突**: 数据模型 §7.1 `project_papers` 表将 `UNIQUE(project_id, paper_id)` 内联约束改为部分唯一索引 `CREATE UNIQUE INDEX idx_pp_unique_active ... WHERE deleted_at IS NULL`，与 `paper_analyses` 的软删除修复保持一致
+  - **ReviewState 体积膨胀风险**: 系统架构 §4.2 `ReviewState` 定义后新增 State 体积管理约束表，明确 `candidate_papers`/`paper_analyses`/`full_draft`/`messages` 等大字段在实现时应存储引用 ID 而非完整对象，避免 Checkpointer 序列化/反序列化性能问题
+  - **SSE vs WebSocket 不一致**: 系统架构 §1.1 系统上下文图 `HTTPS / WebSocket` 修正为 `HTTPS / SSE`；§二 分层架构表现层和接口层描述统一为 `SSE 实时推送` 和 `REST + SSE`
+  - **Celery + asyncio 嵌套事件循环风险**: 系统架构 §10.2 新增嵌套事件循环风险说明和三种应对策略，推荐方案为 Celery 入口 `asyncio.run()` + LangGraph `graph.astream()` 异步 API + Agent Node 定义为 `async def`；任务代码示例从 `graph.stream()` 同步调用改为 `graph.astream()` 异步调用
 - `[设计]` 跨文档 P0 级一致性修复（系统架构文档 + 数据模型文档）
   - **PaperMetadata 双定义对齐**: 系统架构 §4.2 的 TypedDict `PaperMetadata` 新增 `doi`/`s2_id`/`arxiv_id`/`open_access` 字段，与数据模型 §4.3 Pydantic 版对齐；增加权威定义声明注释，明确 TypedDict 为 LangGraph State 内部简化视图，完整定义以数据模型文档为准
   - **Project ORM output_type→output_types**: 系统架构 §7.3 ORM 模型的 `output_type = Column(String)` 修正为 `output_types = Column(JSON)`，与数据模型 §3.1 的 JSON 数组定义对齐；同步补齐 `output_language`/`citation_style`/`search_config`/`token_usage`/`token_budget` 字段
@@ -33,6 +59,10 @@
 
 ### 变更
 
+- `[设计]` 系统架构文档 v1.2→v1.3 / 数据模型文档 v1.2→v1.3 / 产品UX文档 v1.0→v1.1：设计审核修复
+  - **REST API 统一版本前缀** (系统架构 §8.3): 所有业务 API 路径从 `/api/xxx` 改为 `/api/v1/xxx`，为后续破坏性变更预留版本切换空间；健康检查端点 `/healthz`、`/readyz` 保持不变（基础设施端点不需要版本化）
+  - **分页响应格式** (系统架构 §8.3.1): 新增 `PaginatedResponse[T]` 泛型分页响应模型（`items`/`total`/`page`/`size`/`pages`），GET `/api/v1/projects` 和 GET `/api/v1/projects/{id}/papers` 响应类型改为 `PaginatedResponse`
+  - **产品UX文档版本更新**: 文档元信息从 v1.0「初稿」更新为 v1.1「迭代修订」，新增「最后更新」字段
 - `[设计]` 系统架构文档：外部数据源接入层（第九章）新增 `SourceRegistry` 数据源注册机制
   - 新增 9.2 节 `SourceRegistry` 类设计，支持数据源自注册、启用/禁用、自动发现
   - 新增启动时注册示例（`create_source_registry`）和 Search Agent 调用方式（`multi_source_fetch`）
