@@ -446,10 +446,12 @@ README.md                                    # [阶段 7]
 
 ## 十二、后续迭代规划 (MVP 之后)
 
-| 版本 | 主要内容                | 关键新增                                         |
-| ---- | ----------------------- | ------------------------------------------------ |
-| v0.2 | Web 前端                | React + Ant Design SPA，对话式交互，实时进度面板 |
-| v0.3 | 完整 Agent 链路         | Analyst Agent + Critic Agent，配置文件中启用即可 |
-| v0.4 | 多用户 + 可视化         | JWT 认证、权限控制；知识图谱/时间线可视化        |
-| v0.5 | PostgreSQL + 更多数据源 | 数据库迁移、OpenAlex/PubMed 适配器、Update Agent |
-| v1.0 | 生产就绪                | K8s 部署、HTTPS、负载均衡、完善监控              |
+| 版本 | 主要内容              | 关键新增                                         | 状态   |
+| ---- | --------------------- | ------------------------------------------------ | ------ |
+| v0.2 | Web 前端              | React + Ant Design SPA，对话式交互，实时进度面板 | ✅ 完成 |
+| v0.3 | 完整 Agent 链路       | Analyst Agent + Critic Agent，配置文件中启用即可 | ✅ 完成 |
+| v0.4 | 多用户 + 可视化       | JWT 认证、权限控制；D3.js 知识图谱/时间线可视化  | ✅ 完成 |
+| v0.5 | 更多数据源 + 增量更新 | OpenAlex/PubMed 适配器、Update Agent             | ✅ 完成 |
+| v0.6 | 定时调度 + PostgreSQL | Celery Beat 自动更新调度、PostgreSQL 生产数据库  | 📋 计划 |
+| v0.7 | 更多数据源 + OAuth    | Crossref/DBLP 适配器、OAuth SSO 登录             | 📋 计划 |
+| v1.0 | 生产就绪              | K8s 部署、HTTPS、负载均衡、完善监控              | 📋 计划 |

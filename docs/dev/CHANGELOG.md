@@ -11,6 +11,12 @@
 
 ### 变更
 
+- `[文档]` v0.6 实施计划文档 (`docs/dev/v06-implementation-plan.md`)：Celery Beat 定时调度 + PostgreSQL 生产数据库
+  - Celery Beat 周期任务设计：自动增量更新扫描 (每日) + Checkpoint 清理 (每周) + Token 清理 (每日)
+  - PostgreSQL 双数据库并行支持方案：Docker Compose profiles 切换、ORM 方言兼容改造
+  - 项目级自动更新配置：`auto_update_enabled` + `update_interval_days` 字段 + API + 前端 UI
+  - SQLite → PostgreSQL 数据迁移脚本设计 (按外键依赖顺序批量导入)
+  - 5 阶段实施分解、文件产出清单 (~5 新增 / ~20 修改)、技术风险分析
 - `[文档]` CLAUDE.md 全面更新至 v0.5 现状：
   - 项目概述标注当前版本 v0.5
   - 技术栈新增 JWT/bcrypt/RBAC 认证、React 18 + D3.js 前端
