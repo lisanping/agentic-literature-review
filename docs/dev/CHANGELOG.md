@@ -11,6 +11,16 @@
 
 ### 新增
 
+- `[设计]` 系统架构 SVG 图表三件套 (`docs/design/`):
+  - `system_architecture_overview.svg` — 五层分层架构总览（前端/API/任务/智能体/持久化 + Agent 流水线 + HITL 中断点 + 自动修订环路）
+  - `langgraph_workflow_dag.svg` — LangGraph 工作流 DAG（完整节点执行序列、条件路由、两条反馈环路、自动修订循环、三个 HITL 门控）
+  - `services_and_deployment.svg` — 服务层与部署拓扑（7 个核心服务、4 个外部数据源含缓存限速、Docker Compose 四容器拓扑与共享卷）
+
+### 变更
+
+- `[文档]` README.md 系统架构章节改用三张 SVG 图表替代 ASCII 图，分为总体架构、工作流 DAG、服务与部署三个子章节
+- `[文档]` 架构设计详细文档 (`docs/design/architecture-detail.md`) 在系统总览（§1）、工作流引擎（§2）、服务层（§5）三处嵌入对应 SVG 图表及文字说明
+- `[文档]` 架构设计详细文档 (`docs/design/architecture-detail.md`)：基于代码实现的 10 章节全栈架构文档，涵盖 LangGraph 工作流引擎（配置驱动 DAG / ReviewState / 条件路由 / HITL / Checkpoint / 自动修订）、7 个 Agent 实现细节、数据源抽象层、LLM 多模型路由、Redis Pub/Sub↔SSE 事件通信、论文去重、认证权限、Celery 分段执行、ORM 数据模型、前端 Zustand/SSE/D3.js 架构、Docker Compose 部署拓扑
 - `[设计]` 综述级评分标准设计文档 (`docs/design/review-rubric-design.md`)：4 维度共享 Rubric 系统
 - `[后端]` 共享 Rubric 模板 (`prompts/shared/review_rubric.md`)：综合连贯性 / 分析深度 / 学术严谨性 / 实用价值 4 维度评分量表
 - `[后端]` Critic Agent 综述级评估 (`prompts/critic/review_assessment.md` + `assess_review()`)：独立审稿人视角的综述评分
