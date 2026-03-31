@@ -2,11 +2,13 @@ import { Layout } from 'antd';
 import { Outlet, useNavigate } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import StatusBar from './StatusBar';
+import UserMenu from './UserMenu';
 import { useUIStore } from '@/stores/uiStore';
+import { useAuthStore } from '@/stores/authStore';
 import { useProjects } from '@/hooks/useProjects';
 import type { AgentProgress, TokenUsage } from '@/types';
 
-const { Sider, Content, Footer } = Layout;
+const { Header, Sider, Content, Footer } = Layout;
 
 interface AppLayoutProps {
     /** Agent 进度 (由 workflowStore 驱动，阶段 4 接入) */
@@ -25,6 +27,7 @@ export default function AppLayout({
     const navigate = useNavigate();
     const { sidebarCollapsed, setSidebarCollapsed } = useUIStore();
     const { projects, loading: projectsLoading, fetchProjects } = useProjects();
+    const user = useAuthStore((s) => s.user);
 
     return (
         <Layout style={{ minHeight: '100vh' }}>
@@ -52,6 +55,24 @@ export default function AppLayout({
 
             {/* 右侧主区域 */}
             <Layout>
+                {/* 顶部栏 — 用户菜单 */}
+                {user && (
+                    <Header
+                        style={{
+                            background: '#fff',
+                            borderBottom: '1px solid #f0f0f0',
+                            padding: '0 16px',
+                            height: 48,
+                            lineHeight: '48px',
+                            display: 'flex',
+                            justifyContent: 'flex-end',
+                            alignItems: 'center',
+                        }}
+                    >
+                        <UserMenu />
+                    </Header>
+                )}
+
                 {/* 主内容区 */}
                 <Content style={{ display: 'flex', flexDirection: 'column' }}>
                     <div style={{ flex: 1, overflow: 'auto' }}>

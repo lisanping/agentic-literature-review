@@ -31,3 +31,22 @@ export type {
     CriticOutput,
     AnalysisResult,
 } from './analysis';
+export type {
+    User,
+    LoginRequest,
+    RegisterRequest,
+    TokenResponse,
+    PasswordChangeRequest,
+    UserUpdateRequest,
+} from './user';
+export type { ShareCreate, ShareUpdate, ShareResponse } from './share';
+export type {
+    GraphNode,
+    GraphEdge,
+    GraphData,
+    ClusterInfo,
+    TimelineEvent,
+    TimelinePaper,
+    VisualizationState,
+} from './visualization';
+export { CLUSTER_COLORS } from './visualization';

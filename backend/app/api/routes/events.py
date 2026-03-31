@@ -2,11 +2,14 @@
 
 import json
 
-from fastapi import APIRouter, Header
+from fastapi import APIRouter, Depends, Header
 from starlette.responses import StreamingResponse
 
+from app.api.deps import check_project_access, get_current_user_optional, get_db
 from app.config import settings
+from app.models.user import User
 from app.services.event_bus import EventBus, ReplayBuffer
+from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(tags=["events"])
 
@@ -33,12 +36,15 @@ def _format_sse(event: dict) -> str:
 async def sse_stream(
     project_id: str,
     last_event_id: str | None = Header(None, alias="Last-Event-ID"),
+    user: User | None = Depends(get_current_user_optional),
+    db: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
     """Server-Sent Events stream for real-time workflow progress.
 
     Supports ``Last-Event-ID`` header for replay of missed events.
     The stream terminates when a ``complete`` or ``error`` event is received.
     """
+    await check_project_access(project_id, db, user, min_permission="viewer")
 
     async def event_generator():
         # Replay missed events

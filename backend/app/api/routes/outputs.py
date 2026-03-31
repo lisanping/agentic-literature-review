@@ -5,10 +5,11 @@ from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db
+from app.api.deps import check_project_access, get_current_user_optional, get_db
 from app.api.exceptions import NotFoundError
 from app.models.project import Project
 from app.models.review_output import ReviewOutput
+from app.models.user import User
 from app.schemas.output import ReviewOutputResponse
 from app.schemas.workflow import ExportRequest
 from app.services.export import export_bibtex, export_markdown, export_ris, export_word
@@ -22,10 +23,11 @@ router = APIRouter(
 @router.get("", response_model=list[ReviewOutputResponse])
 async def list_outputs(
     project_id: str,
+    user: User | None = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db),
 ) -> list[ReviewOutputResponse]:
     """List all outputs for a project."""
-    await _ensure_project_exists(project_id, db)
+    await check_project_access(project_id, db, user, min_permission="viewer")
 
     result = await db.execute(
         select(ReviewOutput)
@@ -43,9 +45,11 @@ async def list_outputs(
 async def get_output(
     project_id: str,
     output_id: str,
+    user: User | None = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db),
 ) -> ReviewOutputResponse:
     """Get a single output detail."""
+    await check_project_access(project_id, db, user, min_permission="viewer")
     output = await _get_output_or_404(project_id, output_id, db)
     return ReviewOutputResponse.model_validate(output)
 
@@ -55,12 +59,14 @@ async def export_output(
     project_id: str,
     output_id: str,
     body: ExportRequest,
+    user: User | None = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     """Export an output to a specific format (markdown/word/bibtex/ris).
 
     Returns the file as a download.
     """
+    await check_project_access(project_id, db, user, min_permission="viewer")
     output = await _get_output_or_404(project_id, output_id, db)
 
     content_text = output.content or ""
@@ -110,14 +116,3 @@ async def _get_output_or_404(
     if output is None:
         raise NotFoundError("output", output_id)
     return output
-
-
-async def _ensure_project_exists(project_id: str, db: AsyncSession) -> None:
-    result = await db.execute(
-        select(Project.id).where(
-            Project.id == project_id,
-            Project.deleted_at.is_(None),
-        )
-    )
-    if result.scalar_one_or_none() is None:
-        raise NotFoundError("project", project_id)

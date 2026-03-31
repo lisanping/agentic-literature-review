@@ -6,6 +6,7 @@ import {
     StopOutlined,
     FileTextOutlined,
     ExperimentOutlined,
+    ShareAltOutlined,
 } from '@ant-design/icons';
 import { useProjects } from '@/hooks/useProjects';
 import { useWorkflow } from '@/hooks/useWorkflow';
@@ -27,7 +28,13 @@ import ClusterView from '@/components/Analysis/ClusterView';
 import ComparisonTable from '@/components/Analysis/ComparisonTable';
 import TrendChart from '@/components/Analysis/TrendChart';
 import GapList from '@/components/Analysis/GapList';
+import ShareDialog from '@/components/Project/ShareDialog';
+import KnowledgeGraph from '@/components/Visualization/KnowledgeGraph';
+import GraphControls from '@/components/Visualization/GraphControls';
+import PaperDetailDrawer from '@/components/Visualization/PaperDetailDrawer';
 import Loading from '@/components/Common/Loading';
+import type { GraphData } from '@/types/visualization';
+import { getGraphData } from '@/api/visualizations';
 
 const { Title, Text } = Typography;
 
@@ -66,6 +73,9 @@ export default function ProjectPage() {
     const [project, setProject] = useState<Awaited<ReturnType<typeof fetchProject>> | null>(null);
     const [outputs, setOutputs] = useState<ReviewOutputResponse[]>([]);
     const [activeOutput, setActiveOutput] = useState<ReviewOutputResponse | null>(null);
+    const [shareOpen, setShareOpen] = useState(false);
+    const [graphData, setGraphData] = useState<GraphData | null>(null);
+    const graphSvgRef = useRef<SVGSVGElement>(null);
     const reviewRef = useRef<HTMLDivElement>(null);
 
     // 加载项目详情 & 判断是否自动恢复 SSE
@@ -115,6 +125,21 @@ export default function ProjectPage() {
             }
         });
     }, [projectId, project?.status, wfStatus]);
+
+    // 加载知识图谱数据 (有分析结果时)
+    useEffect(() => {
+        if (!projectId) return;
+        const hasAnalysis = analysisResult.analyst || analysisResult.critic;
+        const completed =
+            project?.status === ProjectStatus.COMPLETED || wfStatus === 'completed';
+        if (!hasAnalysis && !completed) return;
+
+        getGraphData(projectId)
+            .then((res) => setGraphData(res.data))
+            .catch(() => {
+                // Graph data not available — not critical
+            });
+    }, [projectId, project?.status, wfStatus, analysisResult]);
 
     /** 大纲导航跳转 */
     const handleOutlineSelect = useCallback((headingId: string) => {
@@ -191,6 +216,12 @@ export default function ProjectPage() {
                                     outputId={activeOutput.id}
                                 />
                             )}
+                            <Button
+                                icon={<ShareAltOutlined />}
+                                onClick={() => setShareOpen(true)}
+                            >
+                                分享
+                            </Button>
                         </Space>
                     </div>
 
@@ -357,6 +388,29 @@ export default function ProjectPage() {
                                 },
                             ]
                             : []),
+                        // 图谱 Tab (有图谱数据时显示)
+                        ...(graphData && graphData.nodes.length > 0
+                            ? [
+                                {
+                                    key: 'graph',
+                                    label: '📊 图谱',
+                                    children: (
+                                        <div style={{ padding: '8px 4px' }}>
+                                            <GraphControls
+                                                clusters={graphData.clusters}
+                                                svgRef={graphSvgRef}
+                                            />
+                                            <KnowledgeGraph
+                                                data={graphData}
+                                                width={460}
+                                                height={400}
+                                            />
+                                            <PaperDetailDrawer nodes={graphData.nodes} />
+                                        </div>
+                                    ),
+                                },
+                            ]
+                            : []),
                         {
                             key: 'token',
                             label: 'Token',
@@ -373,6 +427,13 @@ export default function ProjectPage() {
                     ]}
                 />
             </div>
+
+            {/* 分享对话框 */}
+            <ShareDialog
+                projectId={project.id}
+                open={shareOpen}
+                onClose={() => setShareOpen(false)}
+            />
         </div>
     );
 }

@@ -4,9 +4,10 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db
+from app.api.deps import check_project_access, get_current_user_optional, get_db
 from app.api.exceptions import ConflictError, NotFoundError
 from app.models.project import Project
+from app.models.user import User
 from app.schemas.workflow import HitlFeedback, WorkflowStartResponse, WorkflowStatusResponse
 
 router = APIRouter(prefix="/api/v1/projects/{project_id}/workflow", tags=["workflow"])
@@ -15,13 +16,14 @@ router = APIRouter(prefix="/api/v1/projects/{project_id}/workflow", tags=["workf
 @router.post("/start", response_model=WorkflowStartResponse)
 async def start_workflow(
     project_id: str,
+    user: User | None = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db),
 ) -> WorkflowStartResponse:
     """Start the literature review workflow for a project.
 
     Dispatches a Celery task to execute the workflow asynchronously.
     """
-    project = await _get_project_or_404(project_id, db)
+    project = await check_project_access(project_id, db, user, min_permission="collaborator")
 
     if project.status in ("searching", "reading", "writing", "analyzing"):
         raise ConflictError(
@@ -56,10 +58,11 @@ async def start_workflow(
 async def resume_workflow(
     project_id: str,
     body: HitlFeedback,
+    user: User | None = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db),
 ) -> WorkflowStartResponse:
     """Resume workflow after HITL feedback submission."""
-    project = await _get_project_or_404(project_id, db)
+    project = await check_project_access(project_id, db, user, min_permission="collaborator")
 
     # Build state update from HITL feedback
     state_update = _build_state_update(body)
@@ -78,10 +81,11 @@ async def resume_workflow(
 @router.get("/status", response_model=WorkflowStatusResponse)
 async def get_workflow_status(
     project_id: str,
+    user: User | None = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db),
 ) -> WorkflowStatusResponse:
     """Get current workflow status and progress."""
-    project = await _get_project_or_404(project_id, db)
+    project = await check_project_access(project_id, db, user, min_permission="viewer")
     return WorkflowStatusResponse(
         project_id=project.id,
         phase=project.status,
@@ -93,10 +97,11 @@ async def get_workflow_status(
 @router.post("/cancel", status_code=204)
 async def cancel_workflow(
     project_id: str,
+    user: User | None = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db),
 ) -> None:
     """Cancel a running workflow."""
-    project = await _get_project_or_404(project_id, db)
+    project = await check_project_access(project_id, db, user, min_permission="collaborator")
     project.status = "cancelled"
     await db.commit()
 
@@ -128,16 +133,3 @@ def _build_state_update(feedback: HitlFeedback) -> dict:
         update["hitl_type"] = "draft_review"
 
     return update
-
-
-async def _get_project_or_404(project_id: str, db: AsyncSession) -> Project:
-    result = await db.execute(
-        select(Project).where(
-            Project.id == project_id,
-            Project.deleted_at.is_(None),
-        )
-    )
-    project = result.scalar_one_or_none()
-    if project is None:
-        raise NotFoundError("project", project_id)
-    return project

@@ -11,6 +11,95 @@
 
 ### 新增
 
+- `[后端]` v0.4 阶段 1 — 后端认证基础：
+  - `app/config.py`：新增 JWT/认证配置项（AUTH_REQUIRED, JWT_SECRET_KEY, JWT_ALGORITHM, JWT_ACCESS_TOKEN_EXPIRE_MINUTES, JWT_REFRESH_TOKEN_EXPIRE_DAYS, BCRYPT_COST_FACTOR, FIRST_ADMIN_EMAIL/PASSWORD）
+  - `app/models/user.py`：User ORM 模型（email/username/hashed_password/role/is_active/preferences/avatar_url）
+  - `app/models/refresh_token.py`：RefreshToken ORM 模型（token_hash/SHA-256, expires_at, revoked_at 一次性旋转）
+  - `app/schemas/user.py`：Pydantic v2 Schema（UserRegister/UserLogin/UserResponse/UserUpdate/PasswordChange/TokenResponse/TokenRefresh/AdminUserUpdate，含 EmailStr 校验）
+  - `app/services/auth.py`：认证服务（bcrypt 密码 hash/verify, JWT HS256 access_token 签发/解码, refresh_token 生成/SHA-256 hash）
+  - `app/api/deps.py`：认证依赖注入（get_current_user Bearer Token 解析, get_current_user_optional 向后兼容, require_role 角色检查工厂）
+  - `app/api/routes/auth.py`：认证 API 4 个端点（POST register/login/refresh/logout），refresh_token 旋转，logout 撤销
+  - `alembic/versions/a1b2c3d4e5f6_v04_auth_tables.py`：Alembic 迁移创建 users + refresh_tokens + audit_log 三张表
+  - `app/models/__init__.py`：导出 User + RefreshToken 模型
+  - `app/main.py`：注册 auth 路由
+  - `requirements.txt`：新增 bcrypt, PyJWT, pydantic[email] 依赖
+  - `tests/test_auth.py`：28 个单元测试覆盖密码 hash、JWT 编解码、refresh token 工具、User ORM、注册/登录/刷新/登出 API、认证依赖、向后兼容
+
+- `[后端]` v0.4 阶段 2 — 权限控制与项目隔离：
+  - `app/models/project_share.py`：ProjectShare ORM 模型（project_id/user_id/permission/shared_by/revoked_at，部分唯一索引）
+  - `app/models/audit_log.py`：AuditLog ORM 模型（action/resource_type/resource_id/details/ip_address）
+  - `app/schemas/share.py`：分享 Pydantic Schema（ProjectShareCreate/ProjectShareUpdate/ProjectShareResponse）
+  - `app/services/audit.py`：审计日志服务（best-effort log_action，失败仅 warning 不阻塞）
+  - `app/api/deps.py`：新增 check_project_access() 项目级权限检查（owner/shared/admin 三级判定）
+  - `app/api/routes/shares.py`：项目分享 API 4 个端点（POST share / GET list / PATCH update / DELETE revoke）
+  - `app/api/routes/users.py`：用户管理 API 6 个端点（GET/PATCH /me, PUT /me/password, GET/PATCH/DELETE /users/{id} admin）
+  - `alembic/versions/b2c3d4e5f6a7_v04_sharing_tables.py`：Alembic 迁移创建 project_shares 表
+  - 现有路由改造（向后兼容 AUTH_REQUIRED=false）：
+    - `projects.py`：create 注入 user_id、list 按用户过滤（含共享项目）、get/update/delete 权限检查
+    - `workflow.py`：start/resume 需 collaborator 权限、status 需 viewer、cancel 需 collaborator
+    - `papers.py`：list 需 viewer、update/upload 需 collaborator
+    - `outputs.py`：list/get/export 需 viewer
+    - `events.py`：SSE 连接验证 viewer 权限
+  - `app/main.py`：注册 shares + users 路由
+  - `app/models/__init__.py`：导出 ProjectShare + AuditLog
+  - `tests/test_permissions.py`：23 个单元测试覆盖项目隔离、分享/撤销/权限升级、viewer 无法启动工作流、collaborator 可启动、admin 全局访问、用户管理、密码修改、审计日志、向后兼容
+
+- `[前端]` v0.4 阶段 3 — 前端认证 UI 与项目分享：
+  - `src/types/user.ts`：User/LoginRequest/RegisterRequest/TokenResponse 等类型定义
+  - `src/types/share.ts`：ShareCreate/ShareUpdate/ShareResponse 类型定义
+  - `src/api/auth.ts`：认证 API 层（register/login/refresh/logout/getMe/updateMe/changePassword）
+  - `src/api/shares.ts`：分享 API 层（shareProject/listShares/updateShare/revokeShare）
+  - `src/stores/authStore.ts`：Zustand 认证 Store（localStorage token 持久化、setAuth/clearAuth/updateTokens）
+  - `src/api/client.ts`：Axios 改造（Request 拦截器自动注入 Bearer Token、Response 拦截器 401 自动 refresh 重试 + 请求队列、refresh 失败跳 /login、403 提示权限不足）
+  - `src/pages/LoginPage.tsx`：登录/注册页面（邮箱+密码表单、登录/注册 mode 切换、登录后跳回原页面）
+  - `src/components/Common/ProtectedRoute.tsx`：路由守卫（未认证跳 /login、保存 from 路径）
+  - `src/components/Layout/UserMenu.tsx`：用户下拉菜单（头像+用户名、个人设置入口、退出登录）
+  - `src/pages/SettingsPage.tsx`：个人设置页面（账号信息展示、修改用户名、修改密码含确认）
+  - `src/components/Project/ShareDialog.tsx`：项目分享对话框（邮箱+权限添加、权限变更下拉、撤销确认）
+  - `src/App.tsx`：路由改造（登录页公开路由、ProtectedRoute 包裹主路由、/settings 路由、mount 时自动 hydrate 用户）
+  - `src/components/Layout/AppLayout.tsx`：顶部栏新增 UserMenu 组件
+  - `src/pages/ProjectPage.tsx`：新增"分享"按钮 + ShareDialog 集成
+  - `src/types/index.ts`：导出 User/Share 类型
+
+- `[前端]` v0.4 阶段 4 — 交互式知识图谱：
+  - `package.json`：新增 `d3` + `@types/d3` 依赖
+  - `src/types/visualization.ts`：GraphNode/GraphEdge/GraphData/ClusterInfo/TimelineEvent/VisualizationState 类型定义 + CLUSTER_COLORS 调色板
+  - `src/hooks/useD3.ts`：D3.js + React ref 集成 Hook（SVG 生命周期管理、svgToPng 转换）
+  - `src/stores/visualizationStore.ts`：Zustand 可视化 Store（selectedNodeId/highlightedClusters/timeRange/searchQuery/activeTab 联动状态）
+  - `src/utils/export-svg.ts`：SVG/PNG 导出工具（downloadSvg/downloadPng，Canvas 2x 缩放渲染）
+  - `src/api/visualizations.ts`：可视化 API 层（getGraphData/getTimelineData/getTrendsData）
+  - `src/components/Visualization/KnowledgeGraph.tsx`：D3 力导向图（节点大小映射引用数、颜色映射聚类、凸包聚类边界、Tooltip 悬停、节点拖拽、缩放平移、聚类/搜索/选中联动高亮）
+  - `src/components/Visualization/GraphControls.tsx`：图谱控制面板（论文搜索框、聚类图例点击过滤、SVG/PNG 导出按钮）
+  - `src/components/Visualization/PaperDetailDrawer.tsx`：论文详情抽屉（节点点击弹出：标题/作者/年份/引用数/聚类）
+  - `src/pages/ProjectPage.tsx`：右侧面板新增「图谱」Tab，集成 KnowledgeGraph + GraphControls + PaperDetailDrawer
+  - `src/types/index.ts`：导出 GraphNode/GraphEdge/GraphData/ClusterInfo/TimelineEvent 等类型
+
+- `[后端]` v0.4 阶段 4 — 可视化 API：
+  - `app/api/routes/visualizations.py`：3 个端点（GET graph/timeline/trends），从 project papers + review_output.structured_data 构建图数据
+  - `app/main.py`：注册 visualizations 路由
+
+- `[文档]` 快速开始指南 (`docs/QUICKSTART.md`)：完整的部署与使用文档
+  - Docker Compose 一键部署流程（4 个服务）
+  - 本地开发环境搭建步骤（后端 + 前端 + Redis）
+  - 三种使用方式详解：Web 界面、CLI 命令行、REST API
+  - 工作流 DAG 与各 Agent 职责说明
+  - 环境变量与工作流配置参考
+  - 常见问题排查（FAQ）
+
+- `[设计]` v0.4 实施计划文档 (`docs/dev/v04-implementation-plan.md`)：多用户认证 + 交互式可视化完整设计
+  - 内建 JWT 认证方案：access_token (1h) + refresh_token 旋转 (7d)、bcrypt 密码存储
+  - RBAC 简化权限模型：admin/user 两级角色 + 项目级 owner/collaborator/viewer 权限
+  - 数据模型扩展：users / refresh_tokens / project_shares / audit_log 四张新表
+  - 12 个新增 API 端点：auth 4 + users 6 + shares 4 + visualizations 3
+  - 现有 API 改造方案：向后兼容 AUTH_REQUIRED 配置项
+  - D3.js 交互式知识图谱：力导向布局、节点大小/颜色/形状映射、聚类凸包、Tooltip/Drawer 交互、SVG/PNG 导出
+  - D3.js 交互式时间线：年份气泡、里程碑标记、论文展开、趋势折线叠加
+  - 趋势图升级：CSS 柱状图 → D3 多系列折线图 + 新兴主题气泡图
+  - 图谱-时间线联动交互设计（Zustand visualizationStore 共享状态）
+  - knowledge_map + timeline 输出类型解锁
+  - 7 阶段实施分解、文件产出清单 (~35 新增 / ~20 修改)、依赖关系图
+  - 安全设计要点：密码安全、Token 安全（重用检测/跨设备撤销）、权限安全、输入校验
+
 - `[后端]` Critic Agent DB 回写（阶段 2 遗留项 §2.8 完成）：
   - `_persist_quality_scores()` 函数：将 quality_score + justification 写入 `paper_analyses` 表的 `quality_score` / `quality_notes` 字段
   - `critique_node` 在评估完成后自动调用，仅当 state 含 `project_id` 时触发

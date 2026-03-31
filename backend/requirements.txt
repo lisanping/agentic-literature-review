@@ -27,6 +27,11 @@ openai>=1.60,<2.0
 # PDF 解析
 pymupdf>=1.25,<2.0
 
+# 认证
+bcrypt>=4.2,<5.0
+PyJWT>=2.9,<3.0
+pydantic[email]>=2.0,<3.0
+
 # 日志
 structlog>=24.0,<25.0
 

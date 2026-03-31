@@ -41,5 +41,15 @@ class Settings(BaseSettings):
     # ── Prompt templates ──
     PROMPTS_DIR: str = "prompts"
 
+    # ── Authentication ──
+    AUTH_REQUIRED: bool = False  # False = backward-compatible, no auth enforced
+    JWT_SECRET_KEY: str = "change-me-in-production"
+    JWT_ALGORITHM: str = "HS256"
+    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+    JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    BCRYPT_COST_FACTOR: int = 12
+    FIRST_ADMIN_EMAIL: str = ""  # Auto-create admin on first startup
+    FIRST_ADMIN_PASSWORD: str = ""
+
 
 settings = Settings()

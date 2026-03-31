@@ -7,11 +7,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.api.deps import get_db
+from app.api.deps import check_project_access, get_current_user_optional, get_db
 from app.api.exceptions import NotFoundError
 from app.models.paper import Paper
 from app.models.project import Project
 from app.models.project_paper import ProjectPaper
+from app.models.user import User
 from app.schemas.output import PaginatedResponse
 from app.schemas.paper import PaperResponse, ProjectPaperResponse
 
@@ -27,10 +28,11 @@ async def list_project_papers(
     status: str | None = Query(None, pattern=r"^(candidate|selected|excluded)$"),
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
+    user: User | None = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db),
 ) -> PaginatedResponse:
     """List papers in a project with optional status filter."""
-    await _ensure_project_exists(project_id, db)
+    await check_project_access(project_id, db, user, min_permission="viewer")
 
     q = (
         select(ProjectPaper)
@@ -70,9 +72,11 @@ async def update_paper_status(
     project_id: str,
     paper_id: str,
     body: dict,
+    user: User | None = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db),
 ) -> ProjectPaperResponse:
     """Update a paper's status within a project (candidate → selected / excluded)."""
+    await check_project_access(project_id, db, user, min_permission="collaborator")
     result = await db.execute(
         select(ProjectPaper)
         .options(selectinload(ProjectPaper.paper))
@@ -115,6 +119,7 @@ async def get_paper_detail(
 async def upload_papers(
     project_id: str,
     file: UploadFile = File(...),
+    user: User | None = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db),
 ) -> list[PaperResponse]:
     """Upload a PDF or BibTeX/RIS file to add papers to a project.
@@ -122,7 +127,7 @@ async def upload_papers(
     For MVP, this stores the file and creates a placeholder paper entry.
     Full parsing (BibTeX import, PDF metadata extraction) will be enhanced later.
     """
-    await _ensure_project_exists(project_id, db)
+    await check_project_access(project_id, db, user, min_permission="collaborator")
 
     content = await file.read()
     filename = file.filename or "uploaded"
@@ -158,14 +163,3 @@ def _to_project_paper_response(pp: ProjectPaper) -> ProjectPaperResponse:
         relevance_rank=pp.relevance_rank,
         added_at=pp.added_at,
     )
-
-
-async def _ensure_project_exists(project_id: str, db: AsyncSession) -> None:
-    result = await db.execute(
-        select(Project.id).where(
-            Project.id == project_id,
-            Project.deleted_at.is_(None),
-        )
-    )
-    if result.scalar_one_or_none() is None:
-        raise NotFoundError("project", project_id)
