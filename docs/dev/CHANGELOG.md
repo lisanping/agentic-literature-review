@@ -9,6 +9,74 @@
 
 ## [Unreleased]
 
+### 变更
+
+- `[文档]` CLAUDE.md 全面更新至 v0.5 现状：
+  - 项目概述标注当前版本 v0.5
+  - 技术栈新增 JWT/bcrypt/RBAC 认证、React 18 + D3.js 前端
+  - 项目结构更新为完整 v0.5 目录树（11 路由、14 Agent 节点、4 数据源、11 ORM 模型、Prompt 模板、前端组件结构）
+  - Agent 架构更新为 7 个 Agent + 14 节点，移除 "MVP 阶段只实现 Search+Reader+Writer" 过时描述
+  - 新增「认证与权限」章节
+  - 编码规范更新：Agent 签名改为 `async def`、Prompt 外置到 `prompts/` 目录、Agent 自注册、4 个数据源
+  - 版本范围从 "MVP v0.1" 更新为 "v0.5"，更新已实现/未实现对照表
+  - 常用命令更新：Celery 命令修正、新增 alembic 迁移和前端开发命令
+  - 环境变量补全至 23 项（含数据源 API Key、认证配置、LangGraph 配置）
+- `[文档]` README.md 全面更新至 v0.5 现状：
+  - 功能特性新增：4 源并行检索、增量更新、用户认证、项目分享、D3.js 可视化
+  - 系统架构图更新：新增 Update Agent、React 前端层、JWT Auth
+  - API 端点表扩展为 34 个端点（新增 auth 4 + shares 4 + users 3 + visualizations 3 + updates 3）
+  - 环境变量表扩展为 18 项（新增 OpenAlex/PubMed/认证相关配置）
+  - 项目结构更新为 v0.5 完整目录树
+  - 技术栈表新增前端、认证行
+- `[文档]` QUICKSTART.md 全面更新至 v0.5 现状：
+  - 前置条件新增 OpenAlex/PubMed/NCBI 可选 API Key 说明
+  - 环境变量配置新增 OPENALEX_EMAIL、NCBI_API_KEY、AUTH_REQUIRED
+  - Web 界面使用说明新增：认证流程、项目分享、增量更新、D3 知识图谱
+  - REST API 示例新增：用户注册/登录、Authorization 头、增量更新端点
+  - 各 Agent 职责表新增 Update Agent 描述
+  - 环境变量参考表扩展为 18 项
+  - FAQ 更新：数据源扩展至 4 个、中文支持说明更新
+
+### 新增
+
+- `[后端]` v0.5 — OpenAlex 数据源适配器 (`app/sources/openalex.py`)：
+  - 实现 `PaperSource` 接口 (search/get_paper/get_citations/get_references)
+  - `_reconstruct_abstract()` 从 OpenAlex 倒排索引重建摘要文本
+  - 支持 polite pool（通过 `OPENALEX_EMAIL` 配置）提升速率至 10 req/s
+  - 年份范围、开放获取过滤
+- `[后端]` v0.5 — PubMed 数据源适配器 (`app/sources/pubmed.py`)：
+  - 实现 `PaperSource` 接口，两步检索 (esearch → efetch)
+  - XML 解析 PubmedArticle，支持结构化摘要 (Label 标签)
+  - 引用/被引通过 elink API 实现
+  - 支持 NCBI API Key（`NCBI_API_KEY` 配置）提升速率至 10 req/s
+- `[后端]` v0.5 — PaperMetadata 扩展：
+  - 新增 `openalex_id` / `pmid` / `pmcid` 字段 (schemas + ORM)
+  - Paper ORM 新增 `openalex_id` / `pmid` 列及部分唯一索引
+  - 去重优先级链扩展: DOI > S2 > arXiv > OpenAlex > PMID > 标题模糊匹配
+- `[后端]` v0.5 — Update Agent (`app/agents/update_agent.py`)：
+  - 增量检索 (date_range 过滤) + 差异对比 (6 级 ID 去重)
+  - LLM 相关性评估 (批量评分, 阈值 6/10)
+  - LLM 增量更新报告生成 (新发现/影响评估/修订建议)
+  - Prompt 模板: `prompts/update/relevance_filter.md` + `update_report.md`
+- `[后端]` v0.5 — 更新 API (`app/api/routes/updates.py`)：
+  - `POST /api/v1/projects/{id}/updates` — 触发异步更新检查
+  - `GET /api/v1/projects/{id}/updates` — 查看更新历史
+  - `GET /api/v1/projects/{id}/updates/{update_id}` — 更新报告详情
+- `[后端]` v0.5 — Celery `run_update` 任务 — 异步执行 Update Agent
+- `[后端]` v0.5 — `ProjectStatus.UPDATING` 状态 + `Project.last_search_at` 时间戳
+- `[后端]` v0.5 — `ReviewState` 新增 `update_mode` / `new_papers_found` / `update_report` / `last_search_at` 字段
+- `[前端]` v0.5 — 更新 API 层 (`src/api/updates.ts`) + 项目页"检查更新"按钮
+- `[前端]` v0.5 — `PaperResponse` 类型新增 `openalex_id` / `pmid` 字段
+- `[文档]` v0.5 实施计划 (`docs/dev/v05-implementation-plan.md`)
+- `[后端]` v0.5 — 新增测试: `test_openalex.py` (13) + `test_pubmed.py` (9) + `test_update_agent.py` (17)
+
+### 变更
+
+- `[后端]` `app/sources/__init__.py` — `create_source_registry()` 注册 4 个数据源 (S2 + arXiv + OpenAlex + PubMed)
+- `[后端]` `app/config.py` — 新增 `OPENALEX_EMAIL` / `NCBI_API_KEY` 配置项
+
+---
+
 ### 新增
 
 - `[后端]` v0.4 阶段 1 — 后端认证基础：

@@ -21,6 +21,8 @@ class Paper(Base):
     doi: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
     s2_id: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
     arxiv_id: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
+    openalex_id: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
+    pmid: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
 
     # ── Basic metadata ──
     title: Mapped[str] = mapped_column(String, nullable=False)
@@ -59,6 +61,8 @@ class Paper(Base):
         Index("idx_papers_doi", "doi", sqlite_where=doi.isnot(None)),
         Index("idx_papers_s2_id", "s2_id", sqlite_where=s2_id.isnot(None)),
         Index("idx_papers_arxiv", "arxiv_id", sqlite_where=arxiv_id.isnot(None)),
+        Index("idx_papers_openalex", "openalex_id", sqlite_where=openalex_id.isnot(None)),
+        Index("idx_papers_pmid", "pmid", sqlite_where=pmid.isnot(None)),
         Index("idx_papers_year", "year"),
         Index("idx_papers_title", "title"),
     )

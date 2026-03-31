@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     # ── Semantic Scholar ──
     S2_API_KEY: str = ""
 
+    # ── OpenAlex ──
+    OPENALEX_EMAIL: str = ""
+
+    # ── PubMed / NCBI ──
+    NCBI_API_KEY: str = ""
+
     # ── Logging ──
     LOG_LEVEL: str = "INFO"
 

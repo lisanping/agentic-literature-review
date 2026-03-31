@@ -52,6 +52,10 @@ def _merge_metadata(existing: Paper, metadata: PaperMetadata) -> Paper:
         existing.s2_id = metadata.s2_id
     if not existing.arxiv_id and metadata.arxiv_id:
         existing.arxiv_id = metadata.arxiv_id
+    if not existing.openalex_id and metadata.openalex_id:
+        existing.openalex_id = metadata.openalex_id
+    if not existing.pmid and metadata.pmid:
+        existing.pmid = metadata.pmid
     if not existing.abstract and metadata.abstract:
         existing.abstract = metadata.abstract
     if not existing.pdf_url and metadata.pdf_url:
@@ -78,7 +82,9 @@ async def find_or_create_paper(
       1. DOI exact match (most reliable)
       2. Semantic Scholar ID match
       3. arXiv ID match
-      4. Title fuzzy match (normalized similarity > 0.95)
+      4. OpenAlex ID match
+      5. PubMed ID match
+      6. Title fuzzy match (normalized similarity > 0.95)
     """
     # 1. DOI match
     if metadata.doi:
@@ -107,7 +113,25 @@ async def find_or_create_paper(
         if existing:
             return _merge_metadata(existing, metadata)
 
-    # 4. Title fuzzy match (last resort)
+    # 4. OpenAlex ID match
+    if metadata.openalex_id:
+        result = await db.execute(
+            select(Paper).where(Paper.openalex_id == metadata.openalex_id)
+        )
+        existing = result.scalar_one_or_none()
+        if existing:
+            return _merge_metadata(existing, metadata)
+
+    # 5. PMID match
+    if metadata.pmid:
+        result = await db.execute(
+            select(Paper).where(Paper.pmid == metadata.pmid)
+        )
+        existing = result.scalar_one_or_none()
+        if existing:
+            return _merge_metadata(existing, metadata)
+
+    # 6. Title fuzzy match (last resort)
     normalized = normalize_title(metadata.title)
     # Use the first 50 chars as a coarse filter to avoid full table scan
     result = await db.execute(
@@ -130,6 +154,8 @@ async def find_or_create_paper(
         doi=metadata.doi,
         s2_id=metadata.s2_id,
         arxiv_id=metadata.arxiv_id,
+        openalex_id=metadata.openalex_id,
+        pmid=metadata.pmid,
         citation_count=metadata.citation_count,
         reference_count=metadata.reference_count,
         source=metadata.source,

@@ -28,7 +28,10 @@
 | Node.js                 | 20+                    | 本地前端开发必需        |
 | OpenAI API Key          | —                      | **必需**，用于 LLM 调用 |
 
-> **可选**: Semantic Scholar API Key (`S2_API_KEY`)。没有此 Key 仍可使用，但请求频率限制为 100 次/5 分钟；有 Key 可提升至更高。
+> **可选 API Key**（提升数据源请求频率）：
+> - `S2_API_KEY`：Semantic Scholar，无 Key 100 次/5 分钟，有 Key 可提升
+> - `OPENALEX_EMAIL`：OpenAlex polite pool，提升至 10 req/s
+> - `NCBI_API_KEY`：PubMed NCBI，提升至 10 req/s
 
 ---
 
@@ -56,6 +59,9 @@ cp .env.example .env
 OPENAI_API_KEY=sk-your-key-here        # 必需!
 OPENAI_MODEL=gpt-4o                    # 可选，默认 gpt-4o
 S2_API_KEY=                            # 可选，Semantic Scholar API Key
+OPENALEX_EMAIL=                        # 可选，OpenAlex polite pool
+NCBI_API_KEY=                          # 可选，PubMed NCBI API Key
+AUTH_REQUIRED=false                    # 是否强制认证
 LOG_LEVEL=INFO                         # 可选，日志级别
 ```
 
@@ -185,14 +191,18 @@ pytest tests/test_search_agent.py -v
 ### Web 界面
 
 1. 打开浏览器访问前端地址（Docker: `http://localhost:3000`，本地开发: `http://localhost:5173`）
-2. 在首页输入研究问题，例如：*"What are recent advances in LLM for code generation?"*
-3. 选择输出类型（完整综述 / 方法论综述 / 研究空白报告 / 趋势报告 / 研究路线图）
-4. 点击开始，系统将自动执行文献综述工作流
-5. 在 3 个关键节点会暂停等待你确认：
+2. 如启用认证（`AUTH_REQUIRED=true`），先注册账号并登录
+3. 在首页输入研究问题，例如：*"What are recent advances in LLM for code generation?"*
+4. 选择输出类型（完整综述 / 方法论综述 / 研究空白报告 / 趋势报告 / 研究路线图）
+5. 点击开始，系统将自动执行文献综述工作流
+6. 在 3 个关键节点会暂停等待你确认：
    - **论文列表确认**：审阅检索到的论文，可排除不相关的或追加检索
    - **大纲审阅**：确认综述结构是否合理
    - **初稿审阅**：审阅完整初稿，可要求修改
-6. 完成后可导出为 Markdown / Word / BibTeX / RIS 格式
+7. 完成后可导出为 Markdown / Word / BibTeX / RIS 格式
+8. 可通过项目分享功能将项目共享给其他用户（owner/collaborator/viewer 权限）
+9. 可通过「检查更新」按钮触发增量更新，检索最新文献并生成更新报告
+10. 可在「图谱」Tab 中查看 D3.js 知识图谱、时间线和趋势可视化
 
 ### CLI 命令行
 
@@ -256,32 +266,58 @@ Approve draft? (yes / revise "instruction"): yes
 通过 API 编程式调用：
 
 ```bash
-# 1. 创建项目
+# 0. 注册用户（AUTH_REQUIRED=true 时）
+curl -X POST http://localhost:8000/api/v1/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email": "user@example.com", "password": "your-password"}'
+
+# 0b. 登录获取 Token
+curl -X POST http://localhost:8000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "user@example.com", "password": "your-password"}'
+# 返回: {"access_token": "eyJ...", "refresh_token": "..."}
+
+# 1. 创建项目（AUTH_REQUIRED=false 时无需 Authorization 头）
 curl -X POST http://localhost:8000/api/v1/projects \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <access_token>" \
   -d '{"query": "LLM for code generation", "output_types": ["full_review"]}'
 
 # 2. 启动工作流
-curl -X POST http://localhost:8000/api/v1/projects/{project_id}/workflow/start
+curl -X POST http://localhost:8000/api/v1/projects/{project_id}/workflow/start \
+  -H "Authorization: Bearer <access_token>"
 
 # 3. 查询工作流状态
-curl http://localhost:8000/api/v1/projects/{project_id}/workflow/status
+curl http://localhost:8000/api/v1/projects/{project_id}/workflow/status \
+  -H "Authorization: Bearer <access_token>"
 
 # 4. 订阅实时事件流 (SSE)
-curl -N http://localhost:8000/api/v1/projects/{project_id}/events
+curl -N http://localhost:8000/api/v1/projects/{project_id}/events \
+  -H "Authorization: Bearer <access_token>"
 
 # 5. HITL 反馈恢复（当工作流暂停时）
 curl -X POST http://localhost:8000/api/v1/projects/{project_id}/workflow/resume \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <access_token>" \
   -d '{"action": "approve"}'
 
 # 6. 获取输出列表
-curl http://localhost:8000/api/v1/projects/{project_id}/outputs
+curl http://localhost:8000/api/v1/projects/{project_id}/outputs \
+  -H "Authorization: Bearer <access_token>"
 
 # 7. 导出为 Word 格式
 curl -X POST http://localhost:8000/api/v1/projects/{project_id}/outputs/{output_id}/export \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <access_token>" \
   -d '{"format": "docx"}'
+
+# 8. 触发增量更新检查
+curl -X POST http://localhost:8000/api/v1/projects/{project_id}/updates \
+  -H "Authorization: Bearer <access_token>"
+
+# 9. 查看更新历史
+curl http://localhost:8000/api/v1/projects/{project_id}/updates \
+  -H "Authorization: Bearer <access_token>"
 ```
 
 完整 API 端点列表见 http://localhost:8000/docs 。
@@ -306,15 +342,16 @@ parse_intent → search → [HITL: 确认论文列表]
 
 ### 各 Agent 职责
 
-| Agent             | 功能                                                         |
-| ----------------- | ------------------------------------------------------------ |
-| **Intent Parser** | 解析用户输入，提取研究问题、关键词、时间范围等               |
-| **Search Agent**  | Semantic Scholar + arXiv 并行检索，查询扩展，去重排序        |
-| **Reader Agent**  | PDF 下载解析，LLM 提取目标/方法/发现/局限（5 路并发）        |
-| **Analyst Agent** | Embedding 主题聚类，方法对比矩阵，引用网络，趋势分析         |
-| **Critic Agent**  | 质量评分，矛盾检测，Research Gap 发现，局限性汇总            |
-| **Writer Agent**  | 集群感知大纲生成，分节写作，引用格式化（APA/IEEE/GB/T 7714） |
-| **Export Node**   | 导出 Markdown / Word / BibTeX / RIS                          |
+| Agent             | 功能                                                                          |
+| ----------------- | ----------------------------------------------------------------------------- |
+| **Intent Parser** | 解析用户输入，提取研究问题、关键词、时间范围等                                |
+| **Search Agent**  | Semantic Scholar + arXiv + OpenAlex + PubMed 四源并行检索，查询扩展，去重排序 |
+| **Reader Agent**  | PDF 下载解析，LLM 提取目标/方法/发现/局限（5 路并发）                         |
+| **Analyst Agent** | Embedding 主题聚类，方法对比矩阵，引用网络，趋势分析                          |
+| **Critic Agent**  | 质量评分，矛盾检测，Research Gap 发现，局限性汇总                             |
+| **Writer Agent**  | 集群感知大纲生成，分节写作，引用格式化（APA/IEEE/GB/T 7714）                  |
+| **Update Agent**  | 增量检索新文献，差异对比（6 级 ID 去重），LLM 相关性评估，更新报告生成        |
+| **Export Node**   | 导出 Markdown / Word / BibTeX / RIS                                           |
 
 ### 输出类型
 
@@ -332,18 +369,26 @@ parse_intent → search → [HITL: 确认论文列表]
 
 ### 环境变量
 
-| 变量                   | 必需   | 默认值                            | 说明                                     |
-| ---------------------- | ------ | --------------------------------- | ---------------------------------------- |
-| `OPENAI_API_KEY`       | **是** | —                                 | OpenAI API 密钥                          |
-| `OPENAI_MODEL`         | 否     | `gpt-4o`                          | LLM 模型名称                             |
-| `DATABASE_URL`         | 否     | `sqlite+aiosqlite:///data/app.db` | 数据库连接字符串                         |
-| `CHROMA_PATH`          | 否     | `/data/chroma`                    | ChromaDB 向量数据库路径                  |
-| `REDIS_URL`            | 否     | `redis://localhost:6379/0`        | Redis 连接地址                           |
-| `S2_API_KEY`           | 否     | —                                 | Semantic Scholar API Key（提高请求频率） |
-| `CHECKPOINTER_BACKEND` | 否     | `sqlite`                          | LangGraph 检查点后端                     |
-| `CHECKPOINT_DB_URL`    | 否     | `sqlite:///data/checkpoints.db`   | 检查点数据库路径                         |
-| `LOG_LEVEL`            | 否     | `INFO`                            | 日志级别（DEBUG/INFO/WARNING/ERROR）     |
-| `PROMPTS_DIR`          | 否     | `prompts`                         | Prompt 模板目录                          |
+| 变量                              | 必需   | 默认值                            | 说明                                     |
+| --------------------------------- | ------ | --------------------------------- | ---------------------------------------- |
+| `OPENAI_API_KEY`                  | **是** | —                                 | OpenAI API 密钥                          |
+| `OPENAI_MODEL`                    | 否     | `gpt-4o`                          | LLM 模型名称                             |
+| `DATABASE_URL`                    | 否     | `sqlite+aiosqlite:///data/app.db` | 数据库连接字符串                         |
+| `CHROMA_PATH`                     | 否     | `/data/chroma`                    | ChromaDB 向量数据库路径                  |
+| `REDIS_URL`                       | 否     | `redis://localhost:6379/0`        | Redis 连接地址                           |
+| `S2_API_KEY`                      | 否     | —                                 | Semantic Scholar API Key（提高请求频率） |
+| `OPENALEX_EMAIL`                  | 否     | —                                 | OpenAlex polite pool（提升至 10 req/s）  |
+| `NCBI_API_KEY`                    | 否     | —                                 | PubMed NCBI API Key（提升至 10 req/s）   |
+| `CHECKPOINTER_BACKEND`            | 否     | `sqlite`                          | LangGraph 检查点后端                     |
+| `CHECKPOINT_DB_URL`               | 否     | `sqlite:///data/checkpoints.db`   | 检查点数据库路径                         |
+| `AUTH_REQUIRED`                   | 否     | `false`                           | 是否强制认证                             |
+| `JWT_SECRET_KEY`                  | 否     | `change-me-in-production`         | JWT 签名密钥（生产环境必须修改）         |
+| `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` | 否     | `60`                              | Access Token 有效期（分钟）              |
+| `JWT_REFRESH_TOKEN_EXPIRE_DAYS`   | 否     | `7`                               | Refresh Token 有效期（天）               |
+| `FIRST_ADMIN_EMAIL`               | 否     | —                                 | 首次启动自动创建管理员邮箱               |
+| `FIRST_ADMIN_PASSWORD`            | 否     | —                                 | 首次启动自动创建管理员密码               |
+| `PROMPTS_DIR`                     | 否     | `prompts`                         | Prompt 模板目录                          |
+| `LOG_LEVEL`                       | 否     | `INFO`                            | 日志级别（DEBUG/INFO/WARNING/ERROR）     |
 
 ### 工作流配置
 
@@ -381,7 +426,8 @@ docker compose logs redis
 **Q: 检索到的论文数量很少？**
 
 - 尝试使用更宽泛的英文关键词
-- 配置 `S2_API_KEY` 以提高 Semantic Scholar 的请求频率
+- 配置 `S2_API_KEY`、`OPENALEX_EMAIL`、`NCBI_API_KEY` 以提高各数据源请求频率
+- 系统默认并行检索 4 个数据源（S2 + arXiv + OpenAlex + PubMed）
 - 在 HITL 论文确认环节输入 `add "supplementary query"` 追加检索
 
 **Q: Token 消耗过多？**
@@ -391,7 +437,7 @@ docker compose logs redis
 
 **Q: 中文文献支持如何？**
 
-系统支持中文查询和中文输出（`-l zh`），但数据源（Semantic Scholar、arXiv）以英文文献为主。中文文献的检索覆盖率取决于数据源的收录情况。
+系统支持中文查询和中文输出（`-l zh`），但数据源（Semantic Scholar、arXiv、OpenAlex、PubMed）以英文文献为主。PubMed 对中文生物医学文献有一定收录，其余数据源的中文文献覆盖率有限。
 
 ### 数据与导出
 

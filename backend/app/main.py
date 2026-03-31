@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.logging import setup_logging
 from app.api.exceptions import register_exception_handlers
-from app.api.routes import auth, health, projects, workflow, papers, outputs, events, shares, users, visualizations
+from app.api.routes import auth, health, projects, workflow, papers, outputs, events, shares, users, visualizations, updates
 
 logger = structlog.stdlib.get_logger()
 
@@ -54,3 +54,4 @@ app.include_router(events.router)
 app.include_router(shares.router)
 app.include_router(users.router)
 app.include_router(visualizations.router)
+app.include_router(updates.router)

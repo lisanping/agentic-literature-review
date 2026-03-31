@@ -18,6 +18,9 @@ class PaperMetadata(BaseModel):
     doi: str | None = None
     s2_id: str | None = None
     arxiv_id: str | None = None
+    openalex_id: str | None = None
+    pmid: str | None = None
+    pmcid: str | None = None
     citation_count: int = 0
     reference_count: int = 0
     source: PaperSourceType
@@ -69,6 +72,8 @@ class PaperResponse(BaseModel):
     doi: str | None
     s2_id: str | None
     arxiv_id: str | None
+    openalex_id: str | None = None
+    pmid: str | None = None
     citation_count: int
     source: PaperSourceType
     pdf_url: str | None

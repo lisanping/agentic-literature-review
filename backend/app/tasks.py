@@ -144,3 +144,143 @@ async def _publish_event(
                 node_name,
                 {"phase": output.get("current_phase", node_name)} if isinstance(output, dict) else {},
             )
+
+
+# ── Update Agent Task (v0.5) ──
+
+
+@celery_app.task(bind=True, max_retries=2, default_retry_delay=120)
+def run_update(self, project_id: str) -> dict:
+    """Execute the Update Agent for a project.
+
+    Loads existing project data, runs incremental search + relevance
+    assessment + report generation, and persists results.
+    """
+    try:
+        return asyncio.run(_run_update_async(project_id))
+    except Exception as exc:
+        logger.error(
+            "task.run_update.failed",
+            project_id=project_id,
+            error=str(exc),
+        )
+        raise self.retry(exc=exc)
+
+
+async def _run_update_async(project_id: str) -> dict:
+    """Async update execution logic."""
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.agents.update_agent import update_node
+    from app.models.database import async_session_factory
+    from app.models.project import Project
+    from app.models.project_paper import ProjectPaper
+    from app.models.review_output import ReviewOutput
+    from app.services.event_publisher import EventPublisher
+
+    publisher = EventPublisher(settings.REDIS_URL)
+
+    try:
+        async with async_session_factory() as db:
+            # Load project
+            result = await db.execute(
+                select(Project).where(
+                    Project.id == project_id, Project.deleted_at.is_(None)
+                )
+            )
+            project = result.scalar_one_or_none()
+            if not project:
+                return {"error": f"Project {project_id} not found"}
+
+            # Update status
+            project.status = "updating"
+            await db.flush()
+
+            await publisher.publish(
+                project_id, "progress", "update", {"phase": "updating"}
+            )
+
+            # Load existing papers
+            result = await db.execute(
+                select(ProjectPaper).where(
+                    ProjectPaper.project_id == project_id,
+                    ProjectPaper.deleted_at.is_(None),
+                )
+            )
+            project_papers = result.scalars().all()
+            existing_papers = []
+            for pp in project_papers:
+                p = pp.paper
+                if p:
+                    existing_papers.append({
+                        "doi": p.doi,
+                        "s2_id": p.s2_id,
+                        "arxiv_id": p.arxiv_id,
+                        "openalex_id": getattr(p, "openalex_id", None),
+                        "pmid": getattr(p, "pmid", None),
+                        "title": p.title,
+                    })
+
+            # Build state for update_node
+            state = {
+                "project_id": project_id,
+                "user_query": project.user_query,
+                "search_strategy": project.search_config or {},
+                "selected_papers": existing_papers,
+                "last_search_at": (
+                    project.last_search_at.isoformat()
+                    if project.last_search_at
+                    else None
+                ),
+            }
+
+            # Run Update Agent
+            result_state = await update_node(state)
+
+            # Persist update report as ReviewOutput
+            new_papers = result_state.get("new_papers_found", [])
+            report = result_state.get("update_report", "")
+
+            output = ReviewOutput(
+                project_id=project_id,
+                output_type="update_report",
+                content=report,
+                structured_data={
+                    "new_papers": new_papers,
+                    "new_papers_count": len(new_papers),
+                    "checked_at": result_state.get("last_search_at"),
+                },
+            )
+            db.add(output)
+
+            # Update project timestamp
+            if result_state.get("last_search_at"):
+                project.last_search_at = datetime.fromisoformat(
+                    result_state["last_search_at"]
+                )
+            project.status = "completed"
+            await db.commit()
+
+            await publisher.publish(
+                project_id,
+                "complete",
+                "update",
+                {"new_papers_count": len(new_papers)},
+            )
+
+            return {
+                "project_id": project_id,
+                "new_papers_count": len(new_papers),
+                "status": "update_complete",
+            }
+
+    except Exception as exc:
+        await publisher.publish(
+            project_id, "error", "update", {"message": str(exc)}
+        )
+        raise
+    finally:
+        await publisher.close()

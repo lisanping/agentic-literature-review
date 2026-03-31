@@ -28,6 +28,8 @@ export interface PaperResponse {
     doi: string | null;
     s2_id: string | null;
     arxiv_id: string | null;
+    openalex_id: string | null;
+    pmid: string | null;
     citation_count: number;
     source: PaperSourceType;
     pdf_url: string | null;

@@ -21,7 +21,7 @@ def test_project_status_values():
     assert ProjectStatus.CREATED == "created"
     assert ProjectStatus.COMPLETED == "completed"
     assert ProjectStatus.FAILED == "failed"
-    assert len(ProjectStatus) == 15
+    assert len(ProjectStatus) == 16
 
 
 def test_paper_source_type_values():

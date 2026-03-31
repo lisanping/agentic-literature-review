@@ -78,3 +78,9 @@ class ReviewState(TypedDict, total=False):
 
     # ── Project reference ──
     project_id: str
+
+    # ── Update Agent (v0.5) ──
+    update_mode: bool
+    new_papers_found: list[dict]
+    update_report: str
+    last_search_at: str  # ISO 8601 timestamp

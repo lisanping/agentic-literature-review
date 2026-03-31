@@ -34,6 +34,7 @@ class Project(Base):
     token_usage: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     token_budget: Mapped[int | None] = mapped_column(Integer, nullable=True)
     thread_id: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
+    last_search_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()

@@ -7,6 +7,7 @@ import {
     FileTextOutlined,
     ExperimentOutlined,
     ShareAltOutlined,
+    SyncOutlined,
 } from '@ant-design/icons';
 import { useProjects } from '@/hooks/useProjects';
 import { useWorkflow } from '@/hooks/useWorkflow';
@@ -215,6 +216,24 @@ export default function ProjectPage() {
                                     projectId={project.id}
                                     outputId={activeOutput.id}
                                 />
+                            )}
+                            {isCompleted && (
+                                <Button
+                                    icon={<SyncOutlined />}
+                                    onClick={async () => {
+                                        try {
+                                            const { triggerUpdate } = await import('@/api/updates');
+                                            await triggerUpdate(project.id);
+                                            const { message } = await import('antd');
+                                            message.success('已触发更新检查，请稍候...');
+                                        } catch {
+                                            const { message } = await import('antd');
+                                            message.error('触发更新失败');
+                                        }
+                                    }}
+                                >
+                                    检查更新
+                                </Button>
                             )}
                             <Button
                                 icon={<ShareAltOutlined />}

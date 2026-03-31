@@ -5,6 +5,8 @@ import redis.asyncio as aioredis
 from app.config import Settings
 from app.sources.arxiv import ArxivSource
 from app.sources.cache import CachedSource
+from app.sources.openalex import OpenAlexSource
+from app.sources.pubmed import PubMedSource
 from app.sources.registry import SourceRegistry
 from app.sources.semantic_scholar import SemanticScholarSource
 
@@ -27,6 +29,22 @@ def create_source_registry(config: Settings) -> SourceRegistry:
     registry.register(
         "arxiv",
         CachedSource(ArxivSource(), cache=cache),
+    )
+
+    registry.register(
+        "openalex",
+        CachedSource(
+            OpenAlexSource(email=config.OPENALEX_EMAIL),
+            cache=cache,
+        ),
+    )
+
+    registry.register(
+        "pubmed",
+        CachedSource(
+            PubMedSource(api_key=config.NCBI_API_KEY),
+            cache=cache,
+        ),
     )
 
     return registry

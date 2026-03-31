@@ -42,6 +42,7 @@ class ProjectStatus(StrEnum):
     DRAFT_REVIEW = "draft_review"
     REVISING = "revising"
     EXPORTING = "exporting"
+    UPDATING = "updating"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
