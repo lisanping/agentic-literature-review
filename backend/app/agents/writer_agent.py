@@ -644,3 +644,75 @@ def _parse_json_response(response_text: str, fallback: dict) -> dict:
 agent_registry.register("generate_outline", generate_outline_node)
 agent_registry.register("write_review", write_review_node)
 agent_registry.register("revise_review", revise_review_node)
+
+
+# ── Auto-revision node (iteration contract driven) ──
+
+
+async def auto_revise_node(
+    state: ReviewState,
+    llm: LLMRouter | None = None,
+    prompt_manager: PromptManager | None = None,
+) -> dict:
+    """Auto-revise the draft based on a Critic-generated iteration contract.
+
+    Unlike human-triggered ``revise_review_node`` (which uses user instructions),
+    this node generates a revision contract from the latest review_scores/feedback
+    and uses it to drive targeted revisions.
+    """
+    from app.agents.routing import generate_revision_contract
+
+    llm = llm or LLMRouter()
+    prompt_manager = prompt_manager or PromptManager()
+
+    review_scores = state.get("review_scores", {})
+    review_feedback = state.get("review_feedback", [])
+    full_draft = state.get("full_draft", "")
+    iteration = state.get("revision_iteration_count", 0)
+
+    contract = generate_revision_contract(review_scores, review_feedback)
+
+    logger.info(
+        "auto_revise_start",
+        iteration=iteration + 1,
+        focus=contract["focus_dimensions"],
+        targets=contract["targets"],
+    )
+
+    # Reuse the same revision approach as revise_review_node
+    revision_prompt = (
+        f"请根据以下修改意见修订综述全文。\n\n"
+        f"## 修改意见（聚焦维度: {', '.join(contract['focus_dimensions'])}）\n"
+        f"{contract['instructions']}\n\n"
+        f"## 当前全文\n{full_draft[:12000]}\n\n"
+        f"请输出修订后的完整综述文本（Markdown 格式）。"
+    )
+
+    revised_text, token_usage = await llm.call(
+        prompt=revision_prompt,
+        agent_name="writer",
+        task_type="section_writing",
+        token_usage=state.get("token_usage"),
+    )
+
+    # Record score history
+    history = list(state.get("revision_score_history", []))
+    history.append({"iteration": iteration, "scores": review_scores})
+
+    logger.info(
+        "auto_revise_complete",
+        iteration=iteration + 1,
+        chars=len(revised_text),
+    )
+
+    return {
+        "full_draft": revised_text.strip(),
+        "revision_iteration_count": iteration + 1,
+        "revision_contract": contract,
+        "revision_score_history": history,
+        "token_usage": token_usage,
+        "current_phase": "review_assessment",
+    }
+
+
+agent_registry.register("auto_revise", auto_revise_node)

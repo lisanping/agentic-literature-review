@@ -182,7 +182,24 @@ def _make_v03_registry(
             "citation_verification": [
                 {"paper_id": r["paper_id"], "status": "verified"} for r in refs
             ],
+            "current_phase": "review_assessment",
+        }
+
+    async def _review_assessment(state):
+        return {
+            "review_scores": {"coherence": 7, "depth": 7, "rigor": 8, "utility": 7, "weighted": 7.2},
+            "review_feedback": [],
             "current_phase": "draft_review",
+        }
+
+    async def _auto_revise(state):
+        iteration = state.get("revision_iteration_count", 0)
+        return {
+            "full_draft": "# Auto-revised\n\nImproved.",
+            "revision_iteration_count": iteration + 1,
+            "revision_contract": {"focus_dimensions": ["depth"], "targets": {"depth": 7}},
+            "revision_score_history": [{"iteration": iteration, "scores": state.get("review_scores", {})}],
+            "current_phase": "review_assessment",
         }
 
     async def _human_review_draft(state):
@@ -206,6 +223,8 @@ def _make_v03_registry(
     reg.register("human_review_outline", _human_review_outline)
     reg.register("write_review", _write_review)
     reg.register("verify_citations", _verify_citations)
+    reg.register("review_assessment", _review_assessment)
+    reg.register("auto_revise", _auto_revise)
     reg.register("human_review_draft", _human_review_draft)
     reg.register("export", _export)
     reg.register("revise_review", _revise_review)
@@ -426,7 +445,22 @@ async def test_v03_critic_feedback_max_iterations():
         return {"full_draft": "Draft", "references": [], "current_phase": "verifying"}
 
     async def _verify_citations(state):
-        return {"citation_verification": [], "current_phase": "draft_review"}
+        return {"citation_verification": [], "current_phase": "review_assessment"}
+
+    async def _review_assessment(state):
+        return {
+            "review_scores": {"coherence": 7, "depth": 7, "rigor": 8, "utility": 7, "weighted": 7.2},
+            "review_feedback": [],
+            "current_phase": "draft_review",
+        }
+
+    async def _auto_revise(state):
+        iteration = state.get("revision_iteration_count", 0)
+        return {
+            "full_draft": "Auto-revised",
+            "revision_iteration_count": iteration + 1,
+            "current_phase": "review_assessment",
+        }
 
     async def _human_review_draft(state):
         return {"current_phase": "exporting"}
@@ -449,6 +483,8 @@ async def test_v03_critic_feedback_max_iterations():
     reg.register("human_review_outline", _human_review_outline)
     reg.register("write_review", _write_review)
     reg.register("verify_citations", _verify_citations)
+    reg.register("review_assessment", _review_assessment)
+    reg.register("auto_revise", _auto_revise)
     reg.register("human_review_draft", _human_review_draft)
     reg.register("export", _export)
     reg.register("revise_review", _revise_review)
@@ -519,13 +555,15 @@ async def test_v03_node_order_in_graph():
     graph = build_review_graph()
     node_names = list(graph.nodes.keys())
 
-    # All 15 nodes should be present
+    # All 17 nodes should be present (15 original + review_assessment + auto_revise)
     expected = [
         "parse_intent", "search", "human_review_search",
         "read", "check_read_feedback",
         "analyze", "critique", "check_critic_feedback",
         "generate_outline", "human_review_outline",
-        "write_review", "verify_citations", "human_review_draft",
+        "write_review", "verify_citations",
+        "review_assessment", "auto_revise",
+        "human_review_draft",
         "revise_review", "export",
     ]
     for name in expected:

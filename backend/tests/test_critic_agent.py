@@ -13,6 +13,7 @@ from app.agents.critic_agent import (
     generate_feedback_queries,
     assess_review,
     critique_node,
+    review_assessment_node,
     RUBRIC_WEIGHTS,
     RUBRIC_DIMENSIONS,
 )
@@ -919,3 +920,45 @@ async def test_critique_node_without_full_draft_skips_assessment():
 
     assert "review_scores" not in result
     assert "review_feedback" not in result
+
+
+# ── review_assessment_node ──
+
+
+@pytest.mark.asyncio
+async def test_review_assessment_node_returns_scores():
+    """review_assessment_node evaluates the draft and returns scores."""
+    mock_llm = AsyncMock()
+    response = json.dumps({
+        "scores": {"coherence": 7, "depth": 6, "rigor": 8, "utility": 7},
+        "issues": [{"dimension": "depth", "location": "S2", "description": "Shallow", "suggestion": "Deepen"}],
+        "summary": "Decent."
+    })
+    mock_llm.call = AsyncMock(return_value=(response, {"total_input": 200, "total_output": 100}))
+    mock_pm = MagicMock()
+    mock_pm.render.return_value = "prompt"
+
+    state = {
+        "full_draft": "# Review\n\nContent here.",
+        "user_query": "test query",
+        "output_types": ["full_review"],
+    }
+
+    result = await review_assessment_node(state, llm=mock_llm, prompt_manager=mock_pm)
+
+    assert result["review_scores"]["coherence"] == 7
+    assert result["review_scores"]["depth"] == 6
+    assert "weighted" in result["review_scores"]
+    assert len(result["review_feedback"]) == 1
+    assert result["current_phase"] == "review_assessment"
+
+
+@pytest.mark.asyncio
+async def test_review_assessment_node_no_draft():
+    """review_assessment_node returns early when no full_draft."""
+    state = {"user_query": "test"}
+
+    result = await review_assessment_node(state)
+
+    assert result["current_phase"] == "draft_review"
+    assert "review_scores" not in result

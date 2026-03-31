@@ -221,7 +221,22 @@ def _build_v03_registry(
         refs = state.get("references", [])
         return {
             "citation_verification": [{"paper_id": r["paper_id"], "status": "verified"} for r in refs],
+            "current_phase": "review_assessment",
+        }
+
+    async def _review_assessment(state):
+        return {
+            "review_scores": {"coherence": 7, "depth": 7, "rigor": 8, "utility": 7, "weighted": 7.2},
+            "review_feedback": [],
             "current_phase": "draft_review",
+        }
+
+    async def _auto_revise(state):
+        iteration = state.get("revision_iteration_count", 0)
+        return {
+            "full_draft": "# Auto-revised\n\nImproved.",
+            "revision_iteration_count": iteration + 1,
+            "current_phase": "review_assessment",
         }
 
     async def _human_review_draft(state):
@@ -243,6 +258,7 @@ def _build_v03_registry(
         ("generate_outline", _generate_outline),
         ("human_review_outline", _human_review_outline),
         ("write_review", _write_review), ("verify_citations", _verify_citations),
+        ("review_assessment", _review_assessment), ("auto_revise", _auto_revise),
         ("human_review_draft", _human_review_draft),
         ("revise_review", _revise_review), ("export", _export),
     ]:
@@ -532,9 +548,9 @@ async def test_v03_revision_with_analyst_critic_data():
 # ═══════════════════════════════════════════════
 
 
-def test_v03_graph_has_15_nodes():
-    """Verify the compiled graph has exactly 15 agent nodes."""
+def test_v03_graph_has_17_nodes():
+    """Verify the compiled graph has exactly 17 agent nodes."""
     reg, _, _ = _build_v03_registry()
     graph = build_review_graph(registry=reg)
     node_names = set(graph.nodes.keys()) - {"__start__", "__end__"}
-    assert len(node_names) == 15, f"Expected 15 nodes, got {len(node_names)}: {node_names}"
+    assert len(node_names) == 17, f"Expected 17 nodes, got {len(node_names)}: {node_names}"

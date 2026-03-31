@@ -177,14 +177,49 @@ class ReviewState(TypedDict):
     # ── Review Rubric Assessment (v0.5+) ──
     review_scores: dict | None          # {"coherence": 7, "depth": 6, "rigor": 8, "utility": 7, "weighted": 7.1}
     review_feedback: list[dict] | None  # [{"dimension": "coherence", "issue": "...", "suggestion": "..."}]
+
+    # ── Auto-revision loop (迭代合同) ──
+    revision_iteration_count: int       # 当前自动修订轮次 (0 = 初稿，最大 MAX_REVISION_ITERATIONS)
+    revision_contract: dict | None      # 本轮迭代合同：{"focus_dimensions": ["depth", "coherence"],
+                                        #   "targets": {"depth": 7, "coherence": 7},
+                                        #   "instructions": "具体修改指令"}
+    revision_score_history: list[dict]  # 每轮评分快照 [{"iteration": 0, "scores": {...}}, ...]
 ```
 
 ### 3.5 工作流集成点
 
-在现有 DAG 中，综述级评估发生在 **`write_review` 之后、`human_review_draft` 之前**：
+在现有 DAG 中，综述级评估发生在 **`write_review` 之后、`human_review_draft` 之前**，新增自动修订环路：
 
 ```
-... → write_review → verify_citations → [review_assessment] → human_review_draft → ...
+... → write_review → verify_citations → [review_assessment] → route ──┐
+                                                          │           │
+                                         weighted ≥ 6.0 或│           │ weighted < 6.0 且
+                                         迭代上限/收敛停滞│           │ iteration < MAX
+                                                          ▼           │
+                                                 human_review_draft   │
+                                                          │           │
+                                             ┌────────────┤           │
+                                 user 给出    │    无修改指令           │
+                             revision_instr  │            │           │
+                                             ▼            ▼           │
+                                        revise_review   export       │
+                                        (用户指令修订)                │
+                                             │                        │
+                                             ▼                        │
+                                           export                     │
+                                                                      │
+                     ┌────────────────────────────────────────────────┘
+                     ▼
+                auto_revise (按迭代合同修订)
+                     │
+                     ▼
+              verify_citations (重新验证)
+                     │
+                     ▼
+             [review_assessment] (重新评分)
+                     │
+                     ▼
+                 route ... (循环判断)
 ```
 
 #### 方案 A: 新增独立节点 `review_assessment`
@@ -416,32 +451,250 @@ async def coherence_review(
     # ... LLM call + parse ...
 ```
 
-### 4.6 路由增强
+### 4.6 路由增强 — 迭代合同与自动修订
 
-**当前**: `route_after_draft_review` 仅依赖用户 `revision_instructions`。
+#### 4.6.1 问题回顾
 
-**增强**: 结合 `review_scores` 辅助提示，但不强制覆盖用户决策。
+**当前**: `route_after_draft_review` 仅依赖用户 `revision_instructions`，无自动化质量门控。
+
+**目标**: 在 Writer-Critic 之间引入**迭代合同 (Iteration Contract)** 驱动的自动修订环路，同时保留 HITL 作为最终兜底。
+
+#### 4.6.2 迭代合同机制
+
+在每轮自动修订开始前，系统基于上一轮评分结果生成一份**迭代合同**——明确本轮修订的聚焦维度、目标分数和具体修改指令：
+
+```python
+# 迭代合同示例
+{
+    "focus_dimensions": ["depth", "coherence"],   # 聚焦得分最低的 1-2 个维度
+    "targets": {"depth": 7, "coherence": 7},        # 本轮目标分数（当前分 +1~2）
+    "instructions": "1. 在第3节增加 [2] 和 [5] 方法的对比分析段落；"
+                    "2. 在第2→3节之间补充过渡段落，串联聚类分析与方法对比的逻辑",
+    "previous_scores": {"coherence": 5, "depth": 4, "rigor": 8, "utility": 7, "weighted": 5.65}
+}
+```
+
+核心原则：
+- **聚焦而非泛化**：每轮合同最多关注 2 个最低分维度，避免 Writer 大改引入新问题
+- **目标递增**：target = min(current_score + 2, 10)，设定可达成的增量目标
+- **具体可执行**：instructions 从 `review_feedback` 中提取最相关的 issue，转化为修改指令
+
+#### 4.6.3 生成合同的函数
+
+```python
+MAX_REVISION_ITERATIONS = 2        # 自动修订最多 2 轮
+AUTO_REVISE_THRESHOLD = 6.0        # weighted_score < 6.0 触发自动修订
+MAX_CONTRACT_DIMENSIONS = 2        # 每轮合同最多聚焦 2 个维度
+
+def generate_revision_contract(
+    review_scores: dict,
+    review_feedback: list[dict],
+) -> dict:
+    """Generate an iteration contract from the latest review assessment.
+
+    Selects the lowest-scoring dimensions (up to MAX_CONTRACT_DIMENSIONS),
+    sets incremental targets, and extracts actionable instructions from feedback.
+    """
+    dimensions = ["coherence", "depth", "rigor", "utility"]
+    scored = [(d, review_scores.get(d, 5)) for d in dimensions]
+    scored.sort(key=lambda x: x[1])  # ascending by score
+
+    focus = scored[:MAX_CONTRACT_DIMENSIONS]
+    targets = {d: min(s + 2, 10) for d, s in focus}
+    focus_dims = [d for d, _ in focus]
+
+    # Extract relevant feedback items for focused dimensions
+    relevant_feedback = [
+        fb for fb in review_feedback
+        if fb.get("dimension") in focus_dims
+    ]
+    instructions = "\n".join(
+        f"- [{fb['dimension']}] {fb.get('location', '')}: {fb.get('suggestion', fb.get('description', ''))}"
+        for fb in relevant_feedback[:6]  # cap at 6 items to control prompt length
+    )
+
+    return {
+        "focus_dimensions": focus_dims,
+        "targets": targets,
+        "instructions": instructions or "请改进上述低分维度的整体质量",
+        "previous_scores": review_scores,
+    }
+```
+
+#### 4.6.4 路由函数重构
+
+将原有的单一路由拆为两级路由：
+
+**路由 1**: `route_after_review_assessment` — 在 Critic 综述级评估之后，决定是自动修订还是进入 HITL
+
+```python
+def route_after_review_assessment(state: ReviewState) -> str:
+    """Route after Critic's review-level assessment.
+
+    Decision logic:
+      1. weighted_score >= AUTO_REVISE_THRESHOLD → human_review_draft (质量达标)
+      2. revision_iteration_count >= MAX_REVISION_ITERATIONS → human_review_draft (迭代上限)
+      3. 本轮分数未提升（相比上轮） → human_review_draft (收敛停滞，避免死循环)
+      4. Otherwise → auto_revise (按迭代合同自动修订)
+    """
+    scores = state.get("review_scores", {})
+    weighted = scores.get("weighted", 10.0)
+    iteration = state.get("revision_iteration_count", 0)
+    history = state.get("revision_score_history", [])
+
+    # 质量达标 → 进入人工审阅
+    if weighted >= AUTO_REVISE_THRESHOLD:
+        return "human_review_draft"
+
+    # 迭代上限 → 强制进入人工审阅
+    if iteration >= MAX_REVISION_ITERATIONS:
+        return "human_review_draft"
+
+    # 单调收敛检查：如果本轮分数没有比上轮提升，停止自动修订
+    if len(history) >= 2:
+        prev_weighted = history[-2].get("scores", {}).get("weighted", 0)
+        if weighted <= prev_weighted:
+            return "human_review_draft"
+
+    return "auto_revise"
+```
+
+**路由 2**: `route_after_draft_review` — HITL 暂停后，用户最终决策（保持不变）
 
 ```python
 def route_after_draft_review(state: ReviewState) -> str:
-    """Route after user reviews the draft.
+    """Route after user reviews the draft (HITL).
 
-    - If user provided revision instructions → revise_review
-    - Otherwise → export
-
-    Enhancement: review_scores 作为辅助信息展示给用户（HITL 暂停时），
-    帮助用户判断是否需要修订。评分低于阈值时在前端显示"建议修订"提示，
-    但最终决策权仍在用户。
+    保持现有行为：用户给出 revision_instructions → revise_review，否则 → export。
+    此时用户可以看到 review_scores 和 review_feedback 辅助决策。
     """
     if state.get("revision_instructions"):
         return "revise_review"
     return "export"
 ```
 
-> **设计决策**: 不采用自动阻断模式（score < 6 自动触发修订）。原因：
-> 1. LLM 自评分数可能不准确，自动阻断可能造成无限循环
-> 2. 保持 HITL 原则——用户始终是最终决策者
-> 3. 评分作为**辅助信息**呈现在 HITL 暂停界面，帮助用户做出更知情的决策
+#### 4.6.5 自动修订节点
+
+```python
+async def auto_revise_node(state: ReviewState) -> dict:
+    """Auto-revise the draft based on the iteration contract.
+
+    Unlike human-triggered revise_review (which uses user instructions),
+    this node uses the Critic-generated revision_contract.
+    """
+    contract = generate_revision_contract(
+        review_scores=state.get("review_scores", {}),
+        review_feedback=state.get("review_feedback", []),
+    )
+    iteration = state.get("revision_iteration_count", 0)
+
+    log.info(
+        "auto_revise_start",
+        iteration=iteration + 1,
+        focus=contract["focus_dimensions"],
+        targets=contract["targets"],
+    )
+
+    # 复用现有 revise_review 的核心逻辑，但用 contract.instructions 替代 user instructions
+    revised_draft = await _revise_draft(
+        full_draft=state["full_draft"],
+        revision_instructions=contract["instructions"],
+        user_query=state.get("user_query", ""),
+        llm=llm,
+        prompt_manager=prompt_manager,
+        token_usage=state.get("token_usage"),
+    )
+
+    # 记录评分历史
+    history = list(state.get("revision_score_history", []))
+    history.append({"iteration": iteration, "scores": state.get("review_scores", {})})
+
+    return {
+        "full_draft": revised_draft,
+        "revision_iteration_count": iteration + 1,
+        "revision_contract": contract,
+        "revision_score_history": history,
+    }
+```
+
+#### 4.6.6 workflow.yaml 变更
+
+```yaml
+workflow:
+  nodes:
+    # ... 前面不变 ...
+    - name: write_review
+    - name: verify_citations
+    - name: review_assessment          # [新增] Critic 综述级评估
+    - name: auto_revise                # [新增] 自动修订（仅条件路由可达）
+      sequential: false
+    - name: human_review_draft
+      interrupt: true
+    - name: revise_review
+      sequential: false
+    - name: export
+
+  edges:
+    # ... 前面不变 ...
+    - from: review_assessment
+      router: route_after_review_assessment
+      targets: [auto_revise, human_review_draft]   # [新增] 评估后路由
+    - from: auto_revise
+      to: verify_citations                          # [新增] 修订后重新验证→重新评估
+    - from: human_review_draft
+      router: route_after_draft_review
+      targets: [revise_review, export]              # 保持不变
+```
+
+#### 4.6.7 完整路由流程图
+
+```
+write_review
+    │
+    ▼
+verify_citations
+    │
+    ▼
+┌─────────────────────────┐
+│ review_assessment       │ ◄──────────────────────────┐
+│ (Critic 综述级评估)     │                            │
+└────────────┬────────────┘                            │
+             │                                         │
+    route_after_review_assessment                      │
+      ┌──────┴──────┐                                  │
+      │             │                                  │
+   达标/上限/     不达标且                              │
+   收敛停滞      可继续迭代                             │
+      │             │                                  │
+      ▼             ▼                                  │
+human_review    auto_revise                            │
+   _draft       (按迭代合同修订)                        │
+      │             │                                  │
+ route_after_   verify_citations ──► review_assessment ┘
+ draft_review     (重新验证)
+   ┌──┴──┐
+   │     │
+   ▼     ▼
+revise  export
+_review
+(用户指令修订)
+   │
+   ▼
+ export
+```
+
+#### 4.6.8 设计决策
+
+| 决策                         | 选择                   | 原因                                                  |
+| ---------------------------- | ---------------------- | ----------------------------------------------------- |
+| 自动修订触发阈值             | weighted < 6.0         | 6.0 对应"及格"水平，低于此分可明确判定需改进          |
+| 最大自动修订轮次             | 2 轮                   | 与现有 `max_feedback_iterations` 对齐，控制成本和延迟 |
+| 单调收敛检查                 | 本轮 ≤ 上轮分数 → 停止 | 避免 LLM 评分噪声导致的无限循环                       |
+| 合同聚焦维度数               | 最多 2 个              | 减少修订面，降低引入新问题的风险                      |
+| HITL 仍为最终兜底            | 是                     | 用户始终是最终决策者，自动修订只处理明显低质          |
+| 自动修订复用 `_revise_draft` | 是                     | 最小代码变更，Writer 已有修订能力                     |
+
+> **与纯 HITL 方案的对比**: 原方案中即使综述质量明显低于及格线，仍需要用户手动提供修订指令，用户体验差且依赖用户的学术判断力。迭代合同模式让系统自行处理"明显的低质问题"，用户只需审阅已达标的综述。
 
 ### 4.7 前端展示
 
@@ -480,30 +733,38 @@ def route_after_draft_review(state: ReviewState) -> str:
 阶段 3: 新增 Critic review_assessment    ── 新 Prompt + assess_review() 函数
                  │
                  ▼
-阶段 4: State 扩展 + 前端展示            ── ReviewState 新字段 + HITL UI
+阶段 4: 迭代合同 + 自动修订环路          ── 路由重构 + auto_revise 节点 + workflow.yaml
                  │
                  ▼
-阶段 5: 测试                             ── 单元测试 + 集成验证
+阶段 5: State 扩展 + 前端展示            ── ReviewState 新字段 + HITL UI
+                 │
+                 ▼
+阶段 6: 测试                             ── 单元测试 + 集成验证
 ```
 
 ### 5.2 任务清单
 
-| #   | 任务                          | 输出文件                                        | 说明                                                   |
-| --- | ----------------------------- | ----------------------------------------------- | ------------------------------------------------------ |
-| 1.1 | 创建共享 Rubric 模板          | `prompts/shared/review_rubric.md`               | 4 维度定义 + 评分量表，含可变权重                      |
-| 2.1 | 升级 coherence_review Prompt  | `prompts/writer/coherence_review.md`            | 引入 `{% include %}` Rubric，输出格式改为 4 维度       |
-| 2.2 | 修改 section_writing Prompt   | `prompts/writer/section_writing.md`             | 末尾追加 Rubric 摘要提示，提醒 Writer 写作目标         |
-| 2.3 | 适配 writer_agent.py          | `app/agents/writer_agent.py`                    | `coherence_review()` 解析新格式，传入 output_type 权重 |
-| 3.1 | 新增 review_assessment Prompt | `prompts/critic/review_assessment.md`           | 包含 `{% include %}` Rubric + 审稿人视角指令           |
-| 3.2 | 新增 assess_review() 函数     | `app/agents/critic_agent.py`                    | 综述级评估逻辑 + 权重计算                              |
-| 3.3 | 修改 critique_node()          | `app/agents/critic_agent.py`                    | 根据 full_draft 是否存在条件调用 assess_review()       |
-| 3.4 | 新增 RUBRIC_WEIGHTS 常量      | `app/agents/critic_agent.py`                    | 5 种输出类型的权重映射                                 |
-| 4.1 | ReviewState 新增字段          | `app/agents/state.py`                           | `review_scores` + `review_feedback`                    |
-| 4.2 | 前端类型定义                  | `frontend/src/types/`                           | 新增 ReviewScores 类型                                 |
-| 4.3 | HitlCard 展示评分             | `frontend/src/components/Workflow/HitlCard.tsx` | 在草稿审阅卡片中展示评分                               |
-| 5.1 | Writer 测试                   | `tests/test_writer_agent.py`                    | coherence_review 新格式解析测试                        |
-| 5.2 | Critic 测试                   | `tests/test_critic_agent.py`                    | assess_review + 权重计算测试                           |
-| 5.3 | 集成测试                      | `tests/test_e2e_v03.py`                         | 端到端验证 review_scores 传递                          |
+| #   | 任务                                 | 输出文件                                        | 说明                                                    |
+| --- | ------------------------------------ | ----------------------------------------------- | ------------------------------------------------------- |
+| 1.1 | 创建共享 Rubric 模板                 | `prompts/shared/review_rubric.md`               | 4 维度定义 + 评分量表，含可变权重                       |
+| 2.1 | 升级 coherence_review Prompt         | `prompts/writer/coherence_review.md`            | 引入 `{% include %}` Rubric，输出格式改为 4 维度        |
+| 2.2 | 修改 section_writing Prompt          | `prompts/writer/section_writing.md`             | 末尾追加 Rubric 摘要提示，提醒 Writer 写作目标          |
+| 2.3 | 适配 writer_agent.py                 | `app/agents/writer_agent.py`                    | `coherence_review()` 解析新格式，传入 output_type 权重  |
+| 3.1 | 新增 review_assessment Prompt        | `prompts/critic/review_assessment.md`           | 包含 `{% include %}` Rubric + 审稿人视角指令            |
+| 3.2 | 新增 assess_review() 函数            | `app/agents/critic_agent.py`                    | 综述级评估逻辑 + 权重计算                               |
+| 3.3 | 修改 critique_node()                 | `app/agents/critic_agent.py`                    | 根据 full_draft 是否存在条件调用 assess_review()        |
+| 3.4 | 新增 RUBRIC_WEIGHTS 常量             | `app/agents/critic_agent.py`                    | 5 种输出类型的权重映射                                  |
+| 4.1 | 新增 `generate_revision_contract`    | `app/agents/critic_agent.py`                    | 从评分结果生成迭代合同                                  |
+| 4.2 | 新增 `auto_revise_node`              | `app/agents/writer_agent.py`                    | 按迭代合同自动修订，复用 `_revise_draft`                |
+| 4.3 | 新增 `route_after_review_assessment` | `app/agents/routing.py`                         | 评估后路由：达标→HITL / 不达标→auto_revise              |
+| 4.4 | 修改 workflow.yaml                   | `config/workflow.yaml`                          | 新增 `review_assessment`、`auto_revise` 节点和条件路由  |
+| 5.1 | ReviewState 新增字段                 | `app/agents/state.py`                           | `review_scores` + `review_feedback` + `revision_*` 字段 |
+| 5.2 | 前端类型定义                         | `frontend/src/types/`                           | 新增 ReviewScores + RevisionContract 类型               |
+| 5.3 | HitlCard 展示评分                    | `frontend/src/components/Workflow/HitlCard.tsx` | 在草稿审阅卡片中展示评分、迭代历史                      |
+| 6.1 | Writer 测试                          | `tests/test_writer_agent.py`                    | coherence_review 新格式 + auto_revise 测试              |
+| 6.2 | Critic 测试                          | `tests/test_critic_agent.py`                    | assess_review + generate_revision_contract 测试         |
+| 6.3 | 路由测试                             | `tests/test_workflow.py`                        | route_after_review_assessment 各分支覆盖                |
+| 6.4 | 集成测试                             | `tests/test_e2e_v03.py`                         | 端到端验证自动修订环路、收敛停止、HITL 兜底             |
 
 ### 5.3 文件变更汇总
 
@@ -513,15 +774,18 @@ def route_after_draft_review(state: ReviewState) -> str:
   prompts/critic/review_assessment.md
   (前端类型文件可能新增)
 
-修改: ~8 个文件
+修改: ~10 个文件
   prompts/writer/coherence_review.md
   prompts/writer/section_writing.md
-  app/agents/writer_agent.py
-  app/agents/critic_agent.py
-  app/agents/state.py
+  app/agents/writer_agent.py          # coherence_review 升级 + auto_revise_node
+  app/agents/critic_agent.py          # assess_review + generate_revision_contract
+  app/agents/routing.py               # 新增 route_after_review_assessment
+  app/agents/state.py                 # 新增 revision_* 字段
+  config/workflow.yaml                # 新增节点 + 条件路由
   frontend/src/components/Workflow/HitlCard.tsx
   tests/test_writer_agent.py
   tests/test_critic_agent.py
+  tests/test_workflow.py              # 路由分支覆盖测试
 ```
 
 ### 5.4 验收标准
@@ -530,30 +794,43 @@ def route_after_draft_review(state: ReviewState) -> str:
 - [ ] Writer `coherence_review` 输出 4 维度分数 + 逐维度问题列表
 - [ ] Critic `assess_review` 独立评估综述并输出相同格式的分数
 - [ ] `review_scores` 和 `review_feedback` 正确写入 ReviewState
-- [ ] HITL `human_review_draft` 暂停界面展示评分和改进建议
+- [ ] HITL `human_review_draft` 暂停界面展示评分、迭代历史和改进建议
 - [ ] 不同 output_type 使用正确的权重配置
+- [ ] weighted_score < 6.0 时自动触发修订，生成迭代合同并聚焦最低 1-2 维度
+- [ ] 自动修订最多 2 轮，达到上限后强制进入 HITL
+- [ ] 单调收敛检查：本轮分数未提升时停止自动修订
+- [ ] `revision_score_history` 正确记录每轮评分快照
+- [ ] 用户在 HITL 界面仍可提供 `revision_instructions` 触发额外修订
 - [ ] 全部现有测试无回归
 
 ---
 
 ## 六、Token 消耗预估
 
-| 步骤                                 | 输入 Token                       | 输出 Token | 预估成本      |
-| ------------------------------------ | -------------------------------- | ---------- | ------------- |
-| Writer coherence_review (含 Rubric)  | ~3000 (综述全文) + ~500 (Rubric) | ~500       | ~$0.02        |
-| Critic review_assessment (含 Rubric) | ~3000 (综述全文) + ~500 (Rubric) | ~500       | ~$0.02        |
-| **总增量**                           |                                  |            | **~$0.04/次** |
+| 步骤                                    | 输入 Token                       | 输出 Token | 预估成本      |
+| --------------------------------------- | -------------------------------- | ---------- | ------------- |
+| Writer coherence_review (含 Rubric)     | ~3000 (综述全文) + ~500 (Rubric) | ~500       | ~$0.02        |
+| Critic review_assessment (含 Rubric)    | ~3000 (综述全文) + ~500 (Rubric) | ~500       | ~$0.02        |
+| **基础增量（无自动修订）**              |                                  |            | **~$0.04/次** |
+| 自动修订每轮 (revise + verify + assess) | ~3500 × 3 调用                   | ~1500      | ~$0.06/轮     |
+| **最大增量（2 轮自动修订）**            |                                  |            | **~$0.16/次** |
 
-相比现有工作流总成本 (~$0.20-0.25/次)，增加约 16-20%，属于可接受范围。
+- 无自动修订时（weighted ≥ 6.0）：增加 ~$0.04，相比基准 ~16-20%
+- 1 轮自动修订：增加 ~$0.10，相比基准 ~40-50%
+- 2 轮自动修订（最坏情况）：增加 ~$0.16，相比基准 ~64-80%
+
+实际触发自动修订的比例预计较低（大多数综述初稿 weighted ≥ 6.0），平均增量估计 ~$0.06/次。
 
 ---
 
 ## 七、未来扩展
 
-| 方向              | 版本  | 说明                                                           |
-| ----------------- | ----- | -------------------------------------------------------------- |
-| 自动修订触发      | v0.7+ | 当 weighted_score < 阈值时自动触发 revise_review，无需用户干预 |
-| 多轮评估收敛      | v0.7+ | 修订后重新评分，直到分数达标或达到最大修订次数                 |
-| 用户自定义 Rubric | v0.8+ | 允许用户调整维度权重或新增自定义评估维度                       |
-| 评分历史追踪      | v0.8+ | 记录每轮修订的评分变化，可视化改进趋势                         |
-| 跨项目评分对比    | v1.0  | 比较不同项目综述的质量分布                                     |
+| 方向               | 版本  | 说明                                                             |
+| ------------------ | ----- | ---------------------------------------------------------------- |
+| 用户自定义 Rubric  | v0.8+ | 允许用户调整维度权重或新增自定义评估维度                         |
+| 自适应阈值         | v0.8+ | 基于历史项目评分分布动态调整 `AUTO_REVISE_THRESHOLD`             |
+| 评分趋势可视化     | v0.8+ | 前端展示 `revision_score_history` 的折线图，直观呈现迭代改进趋势 |
+| 跨项目评分对比     | v1.0  | 比较不同项目综述的质量分布                                       |
+| 用户可配置修订策略 | v1.0  | 允许用户选择自动修订/纯 HITL/混合模式                            |
+
+> **已实现（本版本）**: 自动修订触发（迭代合同 + weighted < 6.0 阈值）、多轮评估收敛（单调检查 + 最多 2 轮）、评分历史追踪（`revision_score_history`）。

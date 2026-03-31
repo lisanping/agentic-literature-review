@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from app.agents.writer_agent import (
     apply_citation_weights,
+    auto_revise_node,
     build_references_list,
     generate_outline_node,
     revise_review_node,
@@ -666,3 +667,58 @@ async def test_review_coherence_fallback():
     assert review["scores"]["coherence"] == 5
     assert review["scores"]["depth"] == 5
     assert "weighted" in review["scores"]
+
+
+# ── auto_revise_node ──
+
+
+@pytest.mark.asyncio
+async def test_auto_revise_node_generates_contract_and_revises():
+    """auto_revise_node produces revised draft, increments iteration, records history."""
+    mock_llm = AsyncMock()
+    mock_llm.call = AsyncMock(
+        return_value=("# Revised Draft\n\nImproved content.", {"total_input": 500, "total_output": 300})
+    )
+    mock_pm = MagicMock()
+
+    state = {
+        "full_draft": "# Original\n\nContent.",
+        "review_scores": {"coherence": 4, "depth": 3, "rigor": 7, "utility": 5, "weighted": 4.5},
+        "review_feedback": [
+            {"dimension": "depth", "location": "S3", "description": "Shallow", "suggestion": "Add analysis"},
+        ],
+        "revision_iteration_count": 0,
+        "revision_score_history": [],
+        "user_query": "test query",
+        "output_types": ["full_review"],
+    }
+
+    result = await auto_revise_node(state, llm=mock_llm, prompt_manager=mock_pm)
+
+    assert "Revised" in result["full_draft"] or "Improved" in result["full_draft"]
+    assert result["revision_iteration_count"] == 1
+    assert result["revision_contract"]["focus_dimensions"] == ["depth", "coherence"]
+    assert len(result["revision_score_history"]) == 1
+    assert result["revision_score_history"][0]["iteration"] == 0
+
+
+@pytest.mark.asyncio
+async def test_auto_revise_node_increments_from_existing():
+    """auto_revise_node correctly increments from non-zero iteration."""
+    mock_llm = AsyncMock()
+    mock_llm.call = AsyncMock(return_value=("Revised.", {}))
+    mock_pm = MagicMock()
+
+    state = {
+        "full_draft": "# Draft",
+        "review_scores": {"coherence": 5, "depth": 5, "rigor": 5, "utility": 5, "weighted": 5.0},
+        "review_feedback": [],
+        "revision_iteration_count": 1,
+        "revision_score_history": [{"iteration": 0, "scores": {"weighted": 4.0}}],
+        "user_query": "test",
+    }
+
+    result = await auto_revise_node(state, llm=mock_llm, prompt_manager=mock_pm)
+
+    assert result["revision_iteration_count"] == 2
+    assert len(result["revision_score_history"]) == 2

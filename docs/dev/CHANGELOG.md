@@ -15,6 +15,11 @@
 - `[后端]` 共享 Rubric 模板 (`prompts/shared/review_rubric.md`)：综合连贯性 / 分析深度 / 学术严谨性 / 实用价值 4 维度评分量表
 - `[后端]` Critic Agent 综述级评估 (`prompts/critic/review_assessment.md` + `assess_review()`)：独立审稿人视角的综述评分
 - `[后端]` `ReviewState` 新增 `review_scores` / `review_feedback` 字段，承载 4 维度评分和逐维度反馈
+- `[后端]` `ReviewState` 新增 `revision_iteration_count` / `revision_contract` / `revision_score_history` 字段，支持自动修订环路
+- `[后端]` 迭代合同机制 (`generate_revision_contract()`)：基于评分结果聚焦最低 1-2 维度，生成具体修改指令
+- `[后端]` 自动修订节点 (`auto_revise_node`)：按迭代合同自动修订综述，最多 2 轮，复用 Writer 修订能力
+- `[后端]` 综述评估独立节点 (`review_assessment_node`)：在 `verify_citations` 后独立运行，驱动自动修订/HITL 路由
+- `[后端]` 评估后路由 (`route_after_review_assessment`)：weighted ≥ 6.0 → HITL / 不达标且可迭代 → auto_revise / 上限或停滞 → HITL
 - `[后端]` 5 种输出类型的维度权重映射 (`RUBRIC_WEIGHTS`)：full_review / methodology_review / gap_report / trend_report / research_roadmap
 - `[前端]` `ReviewScores` / `ReviewFeedbackItem` TypeScript 类型定义
 
@@ -24,6 +29,9 @@
 - `[后端]` Writer `section_writing` Prompt 新增质量目标提示，提醒 Writer 在写作时关注 4 个评估维度
 - `[后端]` Critic `critique_node` 增加综述级评估步骤：当 `full_draft` 存在时自动调用 `assess_review()`
 - `[后端]` Writer/Critic Prompt 通过 Jinja2 `{% include "shared/review_rubric.md" %}` 共享同一份评分标准
+- `[后端]` `workflow.yaml` 新增 `review_assessment` 和 `auto_revise` 节点，新增 `route_after_review_assessment` 条件路由
+- `[后端]` Orchestrator 新增 `auto_revise → verify_citations` 回环边，支持自动修订后重新验证和评估
+- `[后端]` `ROUTER_REGISTRY` 新增 `route_after_review_assessment` 注册
 - `[文档]` v0.6 实施计划文档 (`docs/dev/v06-implementation-plan.md`)：Celery Beat 定时调度 + PostgreSQL 生产数据库
   - Celery Beat 周期任务设计：自动增量更新扫描 (每日) + Checkpoint 清理 (每周) + Token 清理 (每日)
   - PostgreSQL 双数据库并行支持方案：Docker Compose profiles 切换、ORM 方言兼容改造

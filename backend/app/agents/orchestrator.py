@@ -200,6 +200,10 @@ def build_review_graph(
     if "revise_review" in enabled_names and "human_review_draft" in enabled_names:
         graph.add_edge("revise_review", "human_review_draft")
 
+    # Auto-revision loop: auto_revise → verify_citations (re-verify & re-assess)
+    if "auto_revise" in enabled_names and "verify_citations" in enabled_names:
+        graph.add_edge("auto_revise", "verify_citations")
+
     logger.info(
         "orchestrator.graph_built",
         nodes=len(enabled_names),

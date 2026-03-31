@@ -685,3 +685,55 @@ async def _persist_quality_scores(
 
 
 agent_registry.register("critique", critique_node)
+
+
+# ── Standalone review assessment node for the auto-revision loop ──
+
+
+async def review_assessment_node(
+    state: ReviewState,
+    llm: LLMRouter | None = None,
+    prompt_manager: PromptManager | None = None,
+) -> dict:
+    """Standalone review assessment node — evaluates the full draft using the shared rubric.
+
+    This node is placed after ``verify_citations`` in the DAG and drives
+    the ``route_after_review_assessment`` conditional edge to decide
+    between auto-revision and HITL draft review.
+    """
+    full_draft = state.get("full_draft", "")
+    if not full_draft:
+        return {"current_phase": "draft_review"}
+
+    llm = llm or LLMRouter()
+    prompt_manager = prompt_manager or PromptManager()
+
+    user_query = state.get("user_query", "")
+    output_types = state.get("output_types", ["full_review"])
+    output_type = output_types[0] if output_types else "full_review"
+
+    review_scores, review_feedback, token_usage = await assess_review(
+        full_draft=full_draft,
+        user_query=user_query,
+        output_type=output_type,
+        llm=llm,
+        prompt_manager=prompt_manager,
+        token_usage=state.get("token_usage"),
+    )
+
+    iteration = state.get("revision_iteration_count", 0)
+    logger.info(
+        "review_assessment_complete",
+        iteration=iteration,
+        weighted=review_scores.get("weighted"),
+    )
+
+    return {
+        "review_scores": review_scores,
+        "review_feedback": review_feedback,
+        "token_usage": token_usage,
+        "current_phase": "review_assessment",
+    }
+
+
+agent_registry.register("review_assessment", review_assessment_node)

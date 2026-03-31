@@ -8,9 +8,13 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from app.agents.routing import (
     MAX_FEEDBACK_ITERATIONS,
+    MAX_REVISION_ITERATIONS,
+    AUTO_REVISE_THRESHOLD,
     check_token_budget,
+    generate_revision_contract,
     route_after_draft_review,
     route_after_read,
+    route_after_review_assessment,
     route_after_search_review,
     route_after_critique,
     ROUTER_REGISTRY,
@@ -95,6 +99,101 @@ class TestRouteAfterDraftReview:
         assert route_after_draft_review(state) == "export"
 
 
+class TestRouteAfterReviewAssessment:
+    def test_high_score_goes_to_hitl(self):
+        """weighted >= threshold → human_review_draft."""
+        state = {"review_scores": {"weighted": 7.5}, "revision_iteration_count": 0}
+        assert route_after_review_assessment(state) == "human_review_draft"
+
+    def test_exactly_threshold_goes_to_hitl(self):
+        """weighted == threshold → human_review_draft."""
+        state = {"review_scores": {"weighted": 6.0}, "revision_iteration_count": 0}
+        assert route_after_review_assessment(state) == "human_review_draft"
+
+    def test_low_score_triggers_auto_revise(self):
+        """weighted < threshold and iteration 0 → auto_revise."""
+        state = {"review_scores": {"weighted": 4.5}, "revision_iteration_count": 0}
+        assert route_after_review_assessment(state) == "auto_revise"
+
+    def test_iteration_cap_forces_hitl(self):
+        """Even with low score, iteration cap → human_review_draft."""
+        state = {
+            "review_scores": {"weighted": 3.0},
+            "revision_iteration_count": MAX_REVISION_ITERATIONS,
+        }
+        assert route_after_review_assessment(state) == "human_review_draft"
+
+    def test_stalled_convergence_forces_hitl(self):
+        """Score did not improve vs previous round → human_review_draft."""
+        state = {
+            "review_scores": {"weighted": 4.0},
+            "revision_iteration_count": 1,
+            "revision_score_history": [
+                {"iteration": 0, "scores": {"weighted": 4.5}},
+                {"iteration": 1, "scores": {"weighted": 4.0}},
+            ],
+        }
+        assert route_after_review_assessment(state) == "human_review_draft"
+
+    def test_improving_score_continues_auto_revise(self):
+        """Score improved but still below threshold → auto_revise."""
+        state = {
+            "review_scores": {"weighted": 5.0},
+            "revision_iteration_count": 1,
+            "revision_score_history": [
+                {"iteration": 0, "scores": {"weighted": 3.0}},
+                {"iteration": 1, "scores": {"weighted": 5.0}},
+            ],
+        }
+        assert route_after_review_assessment(state) == "auto_revise"
+
+    def test_no_scores_defaults_high(self):
+        """Missing review_scores defaults weighted to 10.0 → human_review_draft."""
+        state = {}
+        assert route_after_review_assessment(state) == "human_review_draft"
+
+
+class TestGenerateRevisionContract:
+    def test_focuses_on_lowest_dimensions(self):
+        scores = {"coherence": 8, "depth": 3, "rigor": 7, "utility": 4, "weighted": 5.5}
+        feedback = [
+            {"dimension": "depth", "location": "S3", "suggestion": "Add comparison"},
+            {"dimension": "utility", "location": "S5", "suggestion": "Add directions"},
+            {"dimension": "coherence", "location": "S1", "suggestion": "Improve flow"},
+        ]
+        contract = generate_revision_contract(scores, feedback)
+        assert set(contract["focus_dimensions"]) == {"depth", "utility"}
+        assert contract["targets"]["depth"] == 5  # 3 + 2
+        assert contract["targets"]["utility"] == 6  # 4 + 2
+        assert "depth" in contract["instructions"]
+        assert "utility" in contract["instructions"]
+        # coherence not in instructions (not focused)
+        assert "coherence" not in contract["instructions"]
+
+    def test_target_caps_at_10(self):
+        scores = {"coherence": 9, "depth": 9, "rigor": 9, "utility": 9}
+        contract = generate_revision_contract(scores, [])
+        for target in contract["targets"].values():
+            assert target <= 10
+
+    def test_missing_dimensions_default_to_5(self):
+        scores = {"weighted": 4.0}
+        contract = generate_revision_contract(scores, [])
+        assert len(contract["focus_dimensions"]) == 2
+        for d in contract["focus_dimensions"]:
+            assert contract["targets"][d] == 7  # 5 + 2
+
+    def test_fallback_instructions(self):
+        scores = {"coherence": 3, "depth": 4, "rigor": 5, "utility": 5}
+        contract = generate_revision_contract(scores, [])
+        assert contract["instructions"] == "请改进上述低分维度的整体质量"
+
+    def test_previous_scores_recorded(self):
+        scores = {"coherence": 5, "depth": 5, "rigor": 5, "utility": 5, "weighted": 5.0}
+        contract = generate_revision_contract(scores, [])
+        assert contract["previous_scores"] == scores
+
+
 class TestCheckTokenBudget:
     def test_no_budget(self):
         state = {"token_budget": None}
@@ -121,6 +220,7 @@ def test_router_registry_completeness():
         "route_after_read",
         "route_after_critique",
         "route_after_draft_review",
+        "route_after_review_assessment",
         "check_token_budget",
     ]:
         assert name in ROUTER_REGISTRY
@@ -214,12 +314,14 @@ def test_disabled_nodes_in_config():
 def test_build_review_graph_node_count():
     graph = build_review_graph()
     node_names = list(graph.nodes.keys())
-    # v0.3: 15 enabled nodes (analyze + critique + check_critic_feedback added)
-    assert len(node_names) == 15
+    # v0.5+: 17 nodes (added review_assessment + auto_revise)
+    assert len(node_names) == 17
     assert "analyze" in node_names
     assert "critique" in node_names
     assert "check_critic_feedback" in node_names
     assert "revise_review" in node_names
+    assert "review_assessment" in node_names
+    assert "auto_revise" in node_names
 
 
 def test_build_review_graph_includes_hitl():
@@ -346,7 +448,24 @@ def _make_mock_registry():
         refs = state.get("references", [])
         return {
             "citation_verification": [{"paper_id": r["paper_id"], "status": "verified"} for r in refs],
+            "current_phase": "review_assessment",
+        }
+
+    async def _review_assessment(state):
+        return {
+            "review_scores": {"coherence": 7, "depth": 7, "rigor": 8, "utility": 7, "weighted": 7.2},
+            "review_feedback": [],
             "current_phase": "draft_review",
+        }
+
+    async def _auto_revise(state):
+        iteration = state.get("revision_iteration_count", 0)
+        return {
+            "full_draft": "# Auto-revised draft\n\nImproved content.",
+            "revision_iteration_count": iteration + 1,
+            "revision_contract": {"focus_dimensions": ["depth"], "targets": {"depth": 7}},
+            "revision_score_history": [{"iteration": iteration, "scores": state.get("review_scores", {})}],
+            "current_phase": "review_assessment",
         }
 
     async def _human_review_draft(state):
@@ -370,6 +489,8 @@ def _make_mock_registry():
     reg.register("human_review_outline", _human_review_outline)
     reg.register("write_review", _write_review)
     reg.register("verify_citations", _verify_citations)
+    reg.register("review_assessment", _review_assessment)
+    reg.register("auto_revise", _auto_revise)
     reg.register("human_review_draft", _human_review_draft)
     reg.register("export", _export)
     reg.register("revise_review", _revise_review)

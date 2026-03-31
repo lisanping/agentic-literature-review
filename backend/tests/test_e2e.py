@@ -432,7 +432,22 @@ async def test_full_workflow_e2e_mock_agents():
         refs = state.get("references", [])
         return {
             "citation_verification": [{"paper_id": r["paper_id"], "status": "verified"} for r in refs],
+            "current_phase": "review_assessment",
+        }
+
+    async def _review_assessment(state):
+        return {
+            "review_scores": {"coherence": 7, "depth": 7, "rigor": 8, "utility": 7, "weighted": 7.2},
+            "review_feedback": [],
             "current_phase": "draft_review",
+        }
+
+    async def _auto_revise(state):
+        iteration = state.get("revision_iteration_count", 0)
+        return {
+            "full_draft": "# Auto-revised\n\nImproved.",
+            "revision_iteration_count": iteration + 1,
+            "current_phase": "review_assessment",
         }
 
     async def _human_review_draft(state):
@@ -456,6 +471,8 @@ async def test_full_workflow_e2e_mock_agents():
     reg.register("human_review_outline", _human_review_outline)
     reg.register("write_review", _write_review)
     reg.register("verify_citations", _verify_citations)
+    reg.register("review_assessment", _review_assessment)
+    reg.register("auto_revise", _auto_revise)
     reg.register("human_review_draft", _human_review_draft)
     reg.register("export", _export)
     reg.register("revise_review", _revise_review)
@@ -563,7 +580,22 @@ async def test_full_workflow_e2e_with_revision():
         return {"full_draft": "# Original Draft", "references": [], "current_phase": "verifying"}
 
     async def _verify_citations(state):
-        return {"citation_verification": [], "current_phase": "draft_review"}
+        return {"citation_verification": [], "current_phase": "review_assessment"}
+
+    async def _review_assessment(state):
+        return {
+            "review_scores": {"coherence": 7, "depth": 7, "rigor": 8, "utility": 7, "weighted": 7.2},
+            "review_feedback": [],
+            "current_phase": "draft_review",
+        }
+
+    async def _auto_revise(state):
+        iteration = state.get("revision_iteration_count", 0)
+        return {
+            "full_draft": "# Auto-revised Draft",
+            "revision_iteration_count": iteration + 1,
+            "current_phase": "review_assessment",
+        }
 
     async def _human_review_draft(state):
         return {"current_phase": "draft_review"}
@@ -583,6 +615,7 @@ async def test_full_workflow_e2e_with_revision():
         ("generate_outline", _generate_outline),
         ("human_review_outline", _human_review_outline),
         ("write_review", _write_review), ("verify_citations", _verify_citations),
+        ("review_assessment", _review_assessment), ("auto_revise", _auto_revise),
         ("human_review_draft", _human_review_draft),
         ("revise_review", _revise_review), ("export", _export),
     ]:
@@ -676,7 +709,22 @@ async def test_full_workflow_e2e_feedback_loop():
         return {"full_draft": "# Draft", "references": [], "current_phase": "verifying"}
 
     async def _verify_citations(state):
-        return {"citation_verification": [], "current_phase": "draft_review"}
+        return {"citation_verification": [], "current_phase": "review_assessment"}
+
+    async def _review_assessment(state):
+        return {
+            "review_scores": {"coherence": 7, "depth": 7, "rigor": 8, "utility": 7, "weighted": 7.2},
+            "review_feedback": [],
+            "current_phase": "draft_review",
+        }
+
+    async def _auto_revise(state):
+        iteration = state.get("revision_iteration_count", 0)
+        return {
+            "full_draft": "# Auto-revised",
+            "revision_iteration_count": iteration + 1,
+            "current_phase": "review_assessment",
+        }
 
     async def _human_review_draft(state):
         return {"current_phase": "draft_review"}
@@ -696,6 +744,7 @@ async def test_full_workflow_e2e_feedback_loop():
         ("generate_outline", _generate_outline),
         ("human_review_outline", _human_review_outline),
         ("write_review", _write_review), ("verify_citations", _verify_citations),
+        ("review_assessment", _review_assessment), ("auto_revise", _auto_revise),
         ("human_review_draft", _human_review_draft),
         ("revise_review", _revise_review), ("export", _export),
     ]:

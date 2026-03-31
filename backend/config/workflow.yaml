@@ -20,6 +20,9 @@ workflow:
       interrupt: true
     - name: write_review
     - name: verify_citations
+    - name: review_assessment          # Critic rubric assessment of the draft
+    - name: auto_revise                # auto-revision via iteration contract
+      sequential: false                # only reachable via conditional edge
     - name: human_review_draft
       interrupt: true
     - name: revise_review
@@ -37,8 +40,13 @@ workflow:
     - from: check_critic_feedback
       router: route_after_critique
       targets: [search, generate_outline]
+    - from: review_assessment
+      router: route_after_review_assessment
+      targets: [auto_revise, human_review_draft]
     - from: human_review_draft
       router: route_after_draft_review
       targets: [revise_review, export]
 
   max_feedback_iterations: 2
+  max_revision_iterations: 2
+  auto_revise_threshold: 6.0

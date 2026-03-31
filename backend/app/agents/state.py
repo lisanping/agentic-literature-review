@@ -50,6 +50,11 @@ class ReviewState(TypedDict, total=False):
     review_scores: dict       # {"coherence": 7, "depth": 6, "rigor": 8, "utility": 7, "weighted": 7.1}
     review_feedback: list[dict]  # [{"dimension": "depth", "location": "...", "description": "...", "suggestion": "..."}]
 
+    # ── Auto-revision loop (iteration contract) ──
+    revision_iteration_count: int       # current auto-revision round (0 = initial draft)
+    revision_contract: dict             # {"focus_dimensions": [...], "targets": {...}, "instructions": "..."}
+    revision_score_history: list[dict]  # [{"iteration": 0, "scores": {...}}, ...]
+
     # ── Writing phase ──
     outline: dict
     draft_sections: list[dict]
