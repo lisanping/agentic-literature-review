@@ -27,3 +27,20 @@ export interface WorkflowStatusResponse {
 export interface ExportRequest {
     format: 'markdown' | 'word' | 'bibtex' | 'ris';
 }
+
+/** 综述级评分 — 对齐后端 ReviewState.review_scores */
+export interface ReviewScores {
+    coherence: number;
+    depth: number;
+    rigor: number;
+    utility: number;
+    weighted: number;
+}
+
+/** 综述级反馈条目 — 对齐后端 ReviewState.review_feedback */
+export interface ReviewFeedbackItem {
+    dimension: 'coherence' | 'depth' | 'rigor' | 'utility';
+    location: string;
+    description: string;
+    suggestion: string;
+}

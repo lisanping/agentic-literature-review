@@ -9,8 +9,21 @@
 
 ## [Unreleased]
 
+### 新增
+
+- `[设计]` 综述级评分标准设计文档 (`docs/design/review-rubric-design.md`)：4 维度共享 Rubric 系统
+- `[后端]` 共享 Rubric 模板 (`prompts/shared/review_rubric.md`)：综合连贯性 / 分析深度 / 学术严谨性 / 实用价值 4 维度评分量表
+- `[后端]` Critic Agent 综述级评估 (`prompts/critic/review_assessment.md` + `assess_review()`)：独立审稿人视角的综述评分
+- `[后端]` `ReviewState` 新增 `review_scores` / `review_feedback` 字段，承载 4 维度评分和逐维度反馈
+- `[后端]` 5 种输出类型的维度权重映射 (`RUBRIC_WEIGHTS`)：full_review / methodology_review / gap_report / trend_report / research_roadmap
+- `[前端]` `ReviewScores` / `ReviewFeedbackItem` TypeScript 类型定义
+
 ### 变更
 
+- `[后端]` Writer `coherence_review` 升级为 Rubric-based 自检：输出从 `overall_quality` 单指标改为 4 维度结构化评分
+- `[后端]` Writer `section_writing` Prompt 新增质量目标提示，提醒 Writer 在写作时关注 4 个评估维度
+- `[后端]` Critic `critique_node` 增加综述级评估步骤：当 `full_draft` 存在时自动调用 `assess_review()`
+- `[后端]` Writer/Critic Prompt 通过 Jinja2 `{% include "shared/review_rubric.md" %}` 共享同一份评分标准
 - `[文档]` v0.6 实施计划文档 (`docs/dev/v06-implementation-plan.md`)：Celery Beat 定时调度 + PostgreSQL 生产数据库
   - Celery Beat 周期任务设计：自动增量更新扫描 (每日) + Checkpoint 清理 (每周) + Token 清理 (每日)
   - PostgreSQL 双数据库并行支持方案：Docker Compose profiles 切换、ORM 方言兼容改造

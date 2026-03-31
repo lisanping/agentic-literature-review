@@ -18,11 +18,15 @@ from app.agents.writer_agent import (
     revise_review_node,
     write_review_node,
     write_specialized_output,
+    review_coherence,
+    compute_weighted_score,
     _build_gaps_section,
     _parse_json_response,
     QUALITY_HIGH_THRESHOLD,
     QUALITY_LOW_THRESHOLD,
     SPECIALIZED_OUTPUT_TYPES,
+    RUBRIC_WEIGHTS,
+    RUBRIC_DIMENSIONS,
 )
 
 
@@ -557,3 +561,108 @@ def test_specialized_output_types_set():
     assert "trend_report" in SPECIALIZED_OUTPUT_TYPES
     assert "research_roadmap" in SPECIALIZED_OUTPUT_TYPES
     assert "full_review" not in SPECIALIZED_OUTPUT_TYPES
+
+
+# ── Rubric: compute_weighted_score ──
+
+
+def test_compute_weighted_score_full_review():
+    scores = {"coherence": 8, "depth": 6, "rigor": 7, "utility": 7}
+    weights = RUBRIC_WEIGHTS["full_review"]
+    result = compute_weighted_score(scores, weights)
+    # 8*0.30 + 6*0.25 + 7*0.25 + 7*0.20 = 2.4 + 1.5 + 1.75 + 1.4 = 7.05
+    assert result == 7.05
+
+
+def test_compute_weighted_score_gap_report():
+    scores = {"coherence": 5, "depth": 9, "rigor": 6, "utility": 8}
+    weights = RUBRIC_WEIGHTS["gap_report"]
+    result = compute_weighted_score(scores, weights)
+    # 5*0.15 + 9*0.35 + 6*0.20 + 8*0.30 = 0.75 + 3.15 + 1.2 + 2.4 = 7.5
+    assert result == 7.5
+
+
+def test_compute_weighted_score_defaults_missing():
+    """Missing dimensions default to 5."""
+    scores = {"coherence": 10}
+    weights = RUBRIC_WEIGHTS["full_review"]
+    result = compute_weighted_score(scores, weights)
+    # 10*0.30 + 5*0.25 + 5*0.25 + 5*0.20 = 3.0 + 1.25 + 1.25 + 1.0 = 6.5
+    assert result == 6.5
+
+
+def test_rubric_weights_all_output_types():
+    """Every output type's weights sum to 1.0."""
+    for otype, weights in RUBRIC_WEIGHTS.items():
+        total = sum(weights.values())
+        assert abs(total - 1.0) < 0.001, f"{otype} weights sum to {total}"
+
+
+def test_rubric_dimensions_tuple():
+    assert len(RUBRIC_DIMENSIONS) == 4
+    assert "coherence" in RUBRIC_DIMENSIONS
+    assert "depth" in RUBRIC_DIMENSIONS
+    assert "rigor" in RUBRIC_DIMENSIONS
+    assert "utility" in RUBRIC_DIMENSIONS
+
+
+# ── Rubric: review_coherence (rubric-based) ──
+
+
+@pytest.mark.asyncio
+async def test_review_coherence_rubric_format():
+    """Coherence review returns rubric-based scores and issues."""
+    mock_llm = AsyncMock()
+    rubric_response = json.dumps({
+        "scores": {"coherence": 8, "depth": 6, "rigor": 7, "utility": 7},
+        "issues": [{"dimension": "depth", "location": "Section 3",
+                     "description": "Lacks cross-paper comparison",
+                     "suggestion": "Add comparison paragraph"}],
+        "summary": "Good overall."
+    })
+    mock_llm.call = AsyncMock(return_value=(rubric_response, {"total_input": 100, "total_output": 50}))
+
+    mock_pm = MagicMock()
+    mock_pm.render.return_value = "prompt"
+
+    review, token_usage = await review_coherence(
+        full_draft="Test draft content",
+        user_query="test query",
+        llm=mock_llm,
+        prompt_manager=mock_pm,
+        output_type="full_review",
+    )
+
+    assert "scores" in review
+    assert review["scores"]["coherence"] == 8
+    assert review["scores"]["depth"] == 6
+    assert "weighted" in review["scores"]
+    assert len(review["issues"]) == 1
+    assert review["issues"][0]["dimension"] == "depth"
+    # Back-compat
+    assert "overall_quality" in review
+
+    # Verify weights were passed to prompt render
+    render_call = mock_pm.render.call_args
+    assert render_call.kwargs.get("weights") or "weights" in str(render_call)
+
+
+@pytest.mark.asyncio
+async def test_review_coherence_fallback():
+    """Coherence review falls back to defaults on invalid JSON."""
+    mock_llm = AsyncMock()
+    mock_llm.call = AsyncMock(return_value=("not valid json", {"total_input": 10, "total_output": 5}))
+
+    mock_pm = MagicMock()
+    mock_pm.render.return_value = "prompt"
+
+    review, _ = await review_coherence(
+        full_draft="Test",
+        user_query="test",
+        llm=mock_llm,
+        prompt_manager=mock_pm,
+    )
+
+    assert review["scores"]["coherence"] == 5
+    assert review["scores"]["depth"] == 5
+    assert "weighted" in review["scores"]

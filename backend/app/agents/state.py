@@ -46,6 +46,10 @@ class ReviewState(TypedDict, total=False):
     research_gaps: list[dict]
     limitation_summary: str
 
+    # ── Review-level rubric assessment ──
+    review_scores: dict       # {"coherence": 7, "depth": 6, "rigor": 8, "utility": 7, "weighted": 7.1}
+    review_feedback: list[dict]  # [{"dimension": "depth", "location": "...", "description": "...", "suggestion": "..."}]
+
     # ── Writing phase ──
     outline: dict
     draft_sections: list[dict]

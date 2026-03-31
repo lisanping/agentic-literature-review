@@ -11,7 +11,10 @@ from app.agents.critic_agent import (
     compute_quality_score,
     build_cluster_paper_pairs,
     generate_feedback_queries,
+    assess_review,
     critique_node,
+    RUBRIC_WEIGHTS,
+    RUBRIC_DIMENSIONS,
 )
 
 
@@ -709,3 +712,210 @@ async def test_critique_node_skips_persist_without_project_id():
         await critique_node(state, llm=mock_llm, prompt_manager=mock_pm)
 
         mock_persist.assert_not_called()
+
+
+# ── Rubric constants ──
+
+
+def test_rubric_weights_completeness():
+    """All expected output types have weight entries."""
+    expected = {"full_review", "methodology_review", "gap_report", "trend_report", "research_roadmap"}
+    assert set(RUBRIC_WEIGHTS.keys()) == expected
+
+
+def test_rubric_weights_sum_to_one():
+    for otype, weights in RUBRIC_WEIGHTS.items():
+        total = sum(weights.values())
+        assert abs(total - 1.0) < 0.001, f"{otype} weights sum to {total}"
+
+
+def test_rubric_dimensions():
+    assert RUBRIC_DIMENSIONS == ("coherence", "depth", "rigor", "utility")
+
+
+# ── assess_review ──
+
+
+@pytest.mark.asyncio
+async def test_assess_review_parses_scores():
+    """assess_review correctly parses rubric scores from LLM."""
+    mock_llm = AsyncMock()
+    response = json.dumps({
+        "scores": {"coherence": 8, "depth": 7, "rigor": 9, "utility": 6},
+        "issues": [
+            {"dimension": "utility", "location": "Conclusion",
+             "description": "No future directions", "suggestion": "Add section"}
+        ],
+        "summary": "Solid but needs utility improvements."
+    })
+    mock_llm.call = AsyncMock(return_value=(response, {"total_input": 200, "total_output": 100}))
+
+    mock_pm = MagicMock()
+    mock_pm.render.return_value = "prompt"
+
+    scores, feedback, token_usage = await assess_review(
+        full_draft="Full review text here...",
+        user_query="test query",
+        output_type="full_review",
+        llm=mock_llm,
+        prompt_manager=mock_pm,
+    )
+
+    assert scores["coherence"] == 8
+    assert scores["depth"] == 7
+    assert scores["rigor"] == 9
+    assert scores["utility"] == 6
+    assert "weighted" in scores
+    # full_review: 8*0.30 + 7*0.25 + 9*0.25 + 6*0.20 = 2.4+1.75+2.25+1.2 = 7.6
+    assert scores["weighted"] == 7.6
+    assert len(feedback) == 1
+    assert feedback[0]["dimension"] == "utility"
+
+
+@pytest.mark.asyncio
+async def test_assess_review_fallback_on_bad_json():
+    """assess_review returns defaults on unparseable LLM response."""
+    mock_llm = AsyncMock()
+    mock_llm.call = AsyncMock(return_value=("not json at all", {"total_input": 10, "total_output": 5}))
+
+    mock_pm = MagicMock()
+    mock_pm.render.return_value = "prompt"
+
+    scores, feedback, _ = await assess_review(
+        full_draft="Draft",
+        user_query="q",
+        output_type="full_review",
+        llm=mock_llm,
+        prompt_manager=mock_pm,
+    )
+
+    for d in RUBRIC_DIMENSIONS:
+        assert scores[d] == 5
+    assert scores["weighted"] == 5.0
+    assert feedback == []
+
+
+@pytest.mark.asyncio
+async def test_assess_review_fills_missing_dimensions():
+    """assess_review fills missing dimensions with default score 5."""
+    mock_llm = AsyncMock()
+    response = json.dumps({
+        "scores": {"coherence": 9},  # only one dimension
+        "issues": [],
+        "summary": "Partial.",
+    })
+    mock_llm.call = AsyncMock(return_value=(response, {}))
+
+    mock_pm = MagicMock()
+    mock_pm.render.return_value = "prompt"
+
+    scores, _, _ = await assess_review(
+        full_draft="Draft",
+        user_query="q",
+        output_type="full_review",
+        llm=mock_llm,
+        prompt_manager=mock_pm,
+    )
+
+    assert scores["coherence"] == 9
+    assert scores["depth"] == 5
+    assert scores["rigor"] == 5
+    assert scores["utility"] == 5
+
+
+# ── critique_node with review assessment ──
+
+
+@pytest.mark.asyncio
+async def test_critique_node_with_full_draft_runs_assessment():
+    """critique_node calls assess_review when full_draft is present."""
+    # LLM returns valid JSON for all calls
+    quality_resp = json.dumps({"assessments": [
+        {"paper_id": "p1", "rigor_score": 7, "justification": "ok",
+         "strengths": ["good"], "weaknesses": []}
+    ]})
+    # With empty topic_clusters, detect_contradictions skips LLM call.
+    # Actual LLM call sequence: quality → gaps → limitations → review_assessment
+    gap_resp = json.dumps({"gaps": []})
+    limitation_resp = "No common limitations."
+    review_resp = json.dumps({
+        "scores": {"coherence": 7, "depth": 6, "rigor": 8, "utility": 7},
+        "issues": [],
+        "summary": "Good."
+    })
+
+    responses = [quality_resp, gap_resp, limitation_resp, review_resp]
+    call_count = 0
+
+    async def mock_call(**kwargs):
+        nonlocal call_count
+        idx = min(call_count, len(responses) - 1)
+        call_count += 1
+        return responses[idx], {"total_input": 100, "total_output": 50, "by_agent": {}}
+
+    mock_llm = AsyncMock()
+    mock_llm.call = AsyncMock(side_effect=mock_call)
+    mock_pm = MagicMock()
+    mock_pm.render.return_value = "prompt"
+
+    state = {
+        "paper_analyses": [
+            {"paper_id": "p1", "title": "P1", "citation_count": 10, "venue": "V",
+             "findings": "F", "limitations": "L"},
+        ],
+        "topic_clusters": [],
+        "research_trends": {"by_year": [], "by_topic": [], "emerging_topics": [], "narrative": ""},
+        "user_query": "test",
+        "full_draft": "This is the full review draft...",
+        "output_types": ["full_review"],
+    }
+
+    with patch("app.agents.critic_agent._persist_quality_scores", new_callable=AsyncMock):
+        result = await critique_node(state, llm=mock_llm, prompt_manager=mock_pm)
+
+    assert "review_scores" in result
+    assert "review_feedback" in result
+    assert result["review_scores"]["coherence"] == 7
+
+
+@pytest.mark.asyncio
+async def test_critique_node_without_full_draft_skips_assessment():
+    """critique_node does not call assess_review when full_draft is absent."""
+    quality_resp = json.dumps({"assessments": [
+        {"paper_id": "p1", "rigor_score": 7, "justification": "ok",
+         "strengths": [], "weaknesses": []}
+    ]})
+    contradiction_resp = json.dumps({"contradictions": []})
+    gap_resp = json.dumps({"gaps": []})
+    limitation_resp = "No limitations."
+
+    call_count = 0
+
+    async def mock_call(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        responses = [quality_resp, contradiction_resp, gap_resp, limitation_resp]
+        idx = min(call_count - 1, len(responses) - 1)
+        return responses[idx], {"total_input": 50, "total_output": 25, "by_agent": {}}
+
+    mock_llm = AsyncMock()
+    mock_llm.call = AsyncMock(side_effect=mock_call)
+    mock_pm = MagicMock()
+    mock_pm.render.return_value = "prompt"
+
+    state = {
+        "paper_analyses": [
+            {"paper_id": "p1", "title": "P1", "citation_count": 10, "venue": "V",
+             "findings": "F", "limitations": "L"},
+        ],
+        "topic_clusters": [],
+        "research_trends": {"by_year": [], "by_topic": [], "emerging_topics": [], "narrative": ""},
+        "user_query": "test",
+        # No full_draft
+    }
+
+    with patch("app.agents.critic_agent._persist_quality_scores", new_callable=AsyncMock):
+        result = await critique_node(state, llm=mock_llm, prompt_manager=mock_pm)
+
+    assert "review_scores" not in result
+    assert "review_feedback" not in result

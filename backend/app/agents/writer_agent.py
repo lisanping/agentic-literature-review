@@ -184,7 +184,24 @@ def build_references_list(
     return references
 
 
-# ── Coherence Reviewer ──
+# ── Coherence Reviewer (Rubric-based self-assessment) ──
+
+# Rubric dimension weights by output type
+RUBRIC_WEIGHTS = {
+    "full_review":        {"coherence": 0.30, "depth": 0.25, "rigor": 0.25, "utility": 0.20},
+    "methodology_review": {"coherence": 0.20, "depth": 0.30, "rigor": 0.30, "utility": 0.20},
+    "gap_report":         {"coherence": 0.15, "depth": 0.35, "rigor": 0.20, "utility": 0.30},
+    "trend_report":       {"coherence": 0.25, "depth": 0.30, "rigor": 0.20, "utility": 0.25},
+    "research_roadmap":   {"coherence": 0.15, "depth": 0.25, "rigor": 0.15, "utility": 0.45},
+}
+
+RUBRIC_DIMENSIONS = ("coherence", "depth", "rigor", "utility")
+
+
+def compute_weighted_score(scores: dict, weights: dict) -> float:
+    """Compute weighted rubric score from dimension scores and weights."""
+    total = sum(scores.get(d, 5) * weights.get(d, 0.25) for d in RUBRIC_DIMENSIONS)
+    return round(total, 2)
 
 
 async def review_coherence(
@@ -193,17 +210,25 @@ async def review_coherence(
     llm: LLMRouter,
     prompt_manager: PromptManager,
     token_usage: dict | None = None,
+    output_type: str = "full_review",
 ) -> tuple[dict, dict]:
-    """LLM-based coherence review of the full draft.
+    """Rubric-based self-assessment of the full draft.
+
+    Uses the shared review_rubric.md template (via Jinja2 include) to
+    evaluate the draft on 4 dimensions: coherence, depth, rigor, utility.
 
     Returns:
         (review_result_dict, updated_token_usage)
+        where review_result_dict contains: scores, weighted_score, issues, summary
     """
+    weights = RUBRIC_WEIGHTS.get(output_type, RUBRIC_WEIGHTS["full_review"])
+
     prompt = prompt_manager.render(
         "writer",
         "coherence_review",
         user_query=user_query,
         full_draft=full_draft[:12000],  # limit to avoid token overflow
+        weights=weights,
     )
 
     response_text, token_usage = await llm.call(
@@ -214,10 +239,21 @@ async def review_coherence(
     )
 
     review = _parse_json_response(response_text, fallback={
-        "overall_quality": 0.7,
+        "scores": {"coherence": 5, "depth": 5, "rigor": 5, "utility": 5},
         "issues": [],
         "summary": "Review completed.",
     })
+
+    # Ensure scores dict exists and compute weighted score
+    scores = review.get("scores", {})
+    for d in RUBRIC_DIMENSIONS:
+        if d not in scores:
+            scores[d] = 5
+    scores["weighted"] = compute_weighted_score(scores, weights)
+    review["scores"] = scores
+
+    # Back-compat: provide overall_quality as normalized weighted score
+    review["overall_quality"] = round(scores["weighted"] / 10.0, 2)
 
     return review, token_usage
 

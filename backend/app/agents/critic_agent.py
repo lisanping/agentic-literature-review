@@ -28,6 +28,17 @@ QUALITY_BATCH_SIZE = 10
 MAX_PAIRS_PER_CLUSTER = 10
 MIN_CLUSTER_PAPERS_FOR_FEEDBACK = 3
 
+# Rubric dimension weights by output type (shared with writer_agent)
+RUBRIC_WEIGHTS = {
+    "full_review":        {"coherence": 0.30, "depth": 0.25, "rigor": 0.25, "utility": 0.20},
+    "methodology_review": {"coherence": 0.20, "depth": 0.30, "rigor": 0.30, "utility": 0.20},
+    "gap_report":         {"coherence": 0.15, "depth": 0.35, "rigor": 0.20, "utility": 0.30},
+    "trend_report":       {"coherence": 0.25, "depth": 0.30, "rigor": 0.20, "utility": 0.25},
+    "research_roadmap":   {"coherence": 0.15, "depth": 0.25, "rigor": 0.15, "utility": 0.45},
+}
+
+RUBRIC_DIMENSIONS = ("coherence", "depth", "rigor", "utility")
+
 
 # ── JSON Parsing Utility ──
 
@@ -456,6 +467,67 @@ def generate_feedback_queries(
 # ── Critic Agent Node ──
 
 
+# ── 6. Review-Level Assessment (Rubric-based) ──
+
+
+async def assess_review(
+    full_draft: str,
+    user_query: str,
+    output_type: str,
+    llm: LLMRouter,
+    prompt_manager: PromptManager,
+    token_usage: dict | None = None,
+) -> tuple[dict, list[dict], dict]:
+    """Assess the generated review using the shared rubric.
+
+    This provides an independent Critic-side evaluation of the review
+    output, using the same rubric dimensions as the Writer's self-assessment
+    but from an independent reviewer perspective.
+
+    Returns:
+        (scores_dict, feedback_list, updated_token_usage)
+    """
+    weights = RUBRIC_WEIGHTS.get(output_type, RUBRIC_WEIGHTS["full_review"])
+
+    prompt = prompt_manager.render(
+        "critic",
+        "review_assessment",
+        user_query=user_query,
+        full_draft=full_draft[:12000],
+        weights=weights,
+    )
+
+    response_text, token_usage = await llm.call(
+        prompt=prompt,
+        agent_name="critic",
+        task_type="review_assessment",
+        token_usage=token_usage,
+    )
+
+    parsed = _parse_json_response(response_text)
+    if not parsed or not isinstance(parsed, dict):
+        default_scores = {d: 5 for d in RUBRIC_DIMENSIONS}
+        default_scores["weighted"] = 5.0
+        return default_scores, [], token_usage
+
+    scores = parsed.get("scores", {})
+    for d in RUBRIC_DIMENSIONS:
+        if d not in scores:
+            scores[d] = 5
+    weighted = sum(scores.get(d, 5) * weights.get(d, 0.25) for d in RUBRIC_DIMENSIONS)
+    scores["weighted"] = round(weighted, 2)
+
+    feedback = parsed.get("issues", [])
+
+    logger.info(
+        "critic.review_assessment_complete",
+        scores=scores,
+        issues_count=len(feedback),
+    )
+
+    return scores, feedback, token_usage
+
+
 async def critique_node(
     state: ReviewState,
     llm: LLMRouter | None = None,
@@ -533,7 +605,7 @@ async def critique_node(
         feedback_queries=len(feedback_queries),
     )
 
-    return {
+    updates = {
         "quality_assessments": quality_assessments,
         "contradictions": contradictions,
         "research_gaps": research_gaps,
@@ -542,6 +614,26 @@ async def critique_node(
         "token_usage": token_usage,
         "current_phase": "outlining",
     }
+
+    # ── Review-level assessment (only when full_draft exists) ──
+    full_draft = state.get("full_draft")
+    if full_draft:
+        output_types = state.get("output_types", ["full_review"])
+        output_type = output_types[0] if output_types else "full_review"
+
+        review_scores, review_feedback, token_usage = await assess_review(
+            full_draft=full_draft,
+            user_query=user_query,
+            output_type=output_type,
+            llm=llm,
+            prompt_manager=prompt_manager,
+            token_usage=token_usage,
+        )
+        updates["review_scores"] = review_scores
+        updates["review_feedback"] = review_feedback
+        updates["token_usage"] = token_usage
+
+    return updates
 
 
 async def _persist_quality_scores(
